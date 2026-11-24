@@ -107,9 +107,30 @@ class Delivery(db.Model):
 
 
 with app.app_context():
-    # Create missing tables only. Existing PostgreSQL tables are left untouched;
-    # schema changes must be handled explicitly outside application startup.
-    db.create_all()
+    # Explicit, one-time clean install. The marker table is intentionally not
+    # part of SQLAlchemy metadata, so db.drop_all() will not remove it.
+    reset_requested = os.environ.get('RESET_DATABASE_ON_START', '').strip().lower() in ('1', 'true', 'yes')
+    with db.engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS _market_monitor_reset_marker "
+            "(id INTEGER PRIMARY KEY, reset_at VARCHAR(40) NOT NULL)"
+        ))
+        already_reset = conn.execute(
+            text("SELECT 1 FROM _market_monitor_reset_marker WHERE id = 1")
+        ).first() is not None
+
+    if reset_requested and not already_reset:
+        log.warning('RESET_DATABASE_ON_START enabled: deleting all Market Webhook Monitor tables and data.')
+        db.drop_all()
+        db.create_all()
+        with db.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO _market_monitor_reset_marker (id, reset_at) VALUES (1, :ts)"),
+                {'ts': utcnow().isoformat()}
+            )
+        log.warning('Clean database reset completed. Remove RESET_DATABASE_ON_START from Render now.')
+    else:
+        db.create_all()
 
 
 def current_user():

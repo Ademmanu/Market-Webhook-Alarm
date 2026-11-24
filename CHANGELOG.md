@@ -16,3 +16,9 @@
 - Rebuilt instrument picker as a searchable dropdown with browse-on-focus.
 - Corrected biquote batch quote parsing and added symbol cache, feed outage backoff, and health checks.
 - Resume/re-arm/edit clear the previous quote baseline to prevent stale-price immediate triggers.
+
+
+## Fresh-install reset fix
+- Added explicit one-time reset using `RESET_DATABASE_ON_START=true`.
+- Deletes and recreates all application-managed tables for a fresh install.
+- Keeps a separate marker so a later Render restart cannot repeat the reset.

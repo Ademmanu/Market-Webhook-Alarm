@@ -19,3 +19,6 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+
+      - key: RESET_DATABASE_ON_START
+        value: false

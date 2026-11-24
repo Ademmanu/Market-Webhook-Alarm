@@ -92,3 +92,14 @@ Test webhook payload uses `event: webhook_test` and `test: true`.
 
 ## Limitations
 This is a hobby-grade alert system, not an execution engine or guaranteed trading-alert service. The free biquote feed is MT5-derived and can differ from your broker's symbol naming, spread, price, and quote timing. A 2-second REST polling interval can miss a very brief cross between polls. For more precise event capture, upgrade the monitor to the feed's SignalR streaming endpoint and run it on an always-on worker. Render free instances may restart or be unavailable, and UptimeRobot cannot guarantee continuous monitoring. Use persistent PostgreSQL for the queue and alert records.
+
+
+## Fresh database reset (destructive, one-time)
+To start completely fresh and remove all existing Market Webhook Monitor accounts, alerts, saved webhooks, and delivery records:
+1. In Render, set `RESET_DATABASE_ON_START=true`.
+2. Deploy/restart once.
+3. Wait for the log line `Clean database reset completed`.
+4. Immediately remove this environment variable or set it to `false`, then redeploy.
+5. Visit `/signup` and create a new account using `ADMIN_PASSWORD`.
+
+The reset drops and recreates only tables managed by this application. It does not drop the PostgreSQL database or unrelated tables. A separate marker table prevents the reset from running again on subsequent restarts.
