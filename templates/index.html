@@ -1,0 +1,39 @@
+{% extends "base.html" %}{% block content %}
+<div class="top"><div><h1>Market Webhook Monitor</h1><div class="muted">Independent quotes · biquote feed · checks every {{poll_seconds}} seconds</div></div><a class="btn secondary" href="/logout">Log out</a></div>
+<div class="panel">
+<h2>Create price alert</h2>
+<form method="post" action="/alerts" class="grid">
+<div><label>Market symbol</label><input id="symbol" name="symbol" list="symbols" placeholder="Search or type EURUSD / XAUUSD" required><datalist id="symbols"></datalist></div>
+<div><label>Price field</label><select name="price_field"><option value="mid">Mid (recommended)</option><option value="bid">Bid</option><option value="ask">Ask</option></select></div>
+<div><label>Condition</label><select name="direction"><option value="above">Crosses above</option><option value="below">Crosses below</option></select></div>
+<div><label>Target price</label><input name="target" type="number" step="any" placeholder="e.g. 2350.50" required></div>
+<div class="wide"><label>Your HTTPS webhook URL</label><input name="webhook_url" type="url" placeholder="https://example.com/webhook" required></div>
+<div class="wide"><label>Optional webhook secret (sent as X-Webhook-Secret)</label><input name="webhook_secret" type="password" placeholder="Optional"></div>
+<div class="wide"><button type="submit">Create alert</button></div>
+</form>
+<p class="muted">Alerts trigger on a crossing, not simply because the current price is already beyond the target. After firing, an alert rearms when price returns to the other side.</p>
+</div>
+<div class="panel"><h2>Your alerts ({{alerts|length}})</h2>
+{% if alerts %}
+<table><thead><tr><th>Symbol</th><th>Condition</th><th>Target</th><th>Last price</th><th>State</th><th>Actions</th></tr></thead><tbody>
+{% for a in alerts %}<tr>
+<td data-label="Symbol"><strong>{{a.symbol}}</strong><div class="muted">{{a.price_field|upper}}</div></td>
+<td data-label="Condition">{{"Above" if a.direction=="above" else "Below"}}</td>
+<td data-label="Target">{{"%.8f"|format(a.target)}}</td>
+<td data-label="Last price">{{"%.8f"|format(a.last_price) if a.last_price is not none else "Waiting for quote"}}</td>
+<td data-label="State"><span class="status {{'' if a.enabled else 'off'}}">{{"Armed" if a.enabled and a.armed else ("Triggered" if a.enabled else "Paused")}}</span></td>
+<td data-label="Actions"><div class="actions">
+<form class="inline" method="post" action="/alerts/{{a.id}}/toggle"><button class="secondary" type="submit">{{"Pause" if a.enabled else "Enable"}}</button></form>
+<form class="inline" method="post" action="/alerts/{{a.id}}/delete" onsubmit="return confirm('Delete this alert?')"><button class="danger" type="submit">Delete</button></form>
+</div></td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="muted">No alerts yet. Create one above.</p>{% endif %}
+</div>
+<div class="muted">Service status: <a href="/health" style="color:#58a6ff">/health</a> · <a href="/api/status" style="color:#58a6ff">/api/status</a> · <a href="/api/symbols" style="color:#58a6ff">symbol catalogue</a></div>
+<script>
+fetch('/api/symbols').then(r=>r.json()).then(data=>{
+ const list=document.getElementById('symbols');
+ const rows=Array.isArray(data)?data:(data.items||data.symbols||[]);
+ rows.forEach(x=>{const o=document.createElement('option');o.value=x.name||x.symbol||'';o.label=(x.description||'')+' · '+(x.type||'');if(o.value)list.appendChild(o)});
+}).catch(()=>{});
+</script>
+{% endblock %}
