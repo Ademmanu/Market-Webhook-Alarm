@@ -260,6 +260,24 @@ def logout():
     session.clear(); return redirect(url_for('login'))
 
 
+@app.post('/account/delete')
+@login_required
+def delete_account():
+    user=current_user()
+    alert_ids=[row.id for row in Alert.query.filter_by(user_id=user.id).with_entities(Alert.id).all()]
+    # Remove this account's data, including delivery records linked through its alerts.
+    Delivery.query.filter(
+        db.or_(Delivery.user_id==user.id, Delivery.alert_id.in_(alert_ids) if alert_ids else db.false())
+    ).delete(synchronize_session=False)
+    Alert.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    SavedWebhook.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.session.delete(user)
+    db.session.commit()
+    session.clear()
+    flash('Your account and its associated data have been deleted.', 'success')
+    return redirect(url_for('login'))
+
+
 @app.route('/')
 @login_required
 def index():
@@ -392,6 +410,25 @@ def save_webhook():
         flash(msg or 'Enter a name for this webhook.', 'error'); return redirect(url_for('index'))
     db.session.add(SavedWebhook(user_id=current_user().id,name=name,url=url,secret=secret)); db.session.commit()
     flash('Webhook destination saved to your account.', 'success'); return redirect(url_for('index'))
+
+
+@app.route('/webhooks/<int:webhook_id>/edit', methods=['GET','POST'])
+@login_required
+def edit_webhook(webhook_id):
+    w=SavedWebhook.query.filter_by(id=webhook_id,user_id=current_user().id).first_or_404()
+    if request.method == 'POST':
+        name=request.form.get('name','').strip()[:80]
+        url=request.form.get('url','').strip()
+        secret=request.form.get('secret','').strip() or None
+        ok,msg=valid_webhook_url(url)
+        if not name or not ok:
+            flash(msg or 'Enter a name for this webhook.', 'error')
+            return render_template('saved_webhook_edit.html', webhook=w)
+        w.name=name; w.url=url; w.secret=secret
+        db.session.commit()
+        flash('Saved webhook updated.', 'success')
+        return redirect(url_for('index'))
+    return render_template('saved_webhook_edit.html', webhook=w)
 
 
 @app.post('/webhooks/<int:webhook_id>/delete')

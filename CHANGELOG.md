@@ -10,3 +10,8 @@
 - Added asynchronous background form actions with dismissible five-second toast notifications.
 - Added conditional display for candle timeframe, repeat cooldown, expiry and saved-webhook name.
 - Kept the existing database schema; no new columns or migration are required.
+
+## V3 update
+- Added account deletion beside Log out, with a confirmation prompt. Deleting an account also removes its alerts, saved webhook destinations, and delivery history.
+- Added Edit webhook to each saved destination's three-dot action menu.
+- Saved webhook editing validates the HTTPS destination and updates the saved name, URL, and optional secret.

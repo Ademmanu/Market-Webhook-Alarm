@@ -1,0 +1,11 @@
+{% extends 'base.html' %}{% block content %}
+<div class="top"><div class="brand"><div class="brandmark">M</div><div><h1>Edit saved webhook</h1><div class="muted">Update the destination saved to your account.</div></div></div><a class="btn secondary" href="{{url_for('index')}}">Back to dashboard</a></div>
+<div class="panel" style="max-width:680px">
+<form method="post" action="{{url_for('edit_webhook',webhook_id=webhook.id)}}">
+<input type="hidden" name="_csrf" value="{{csrf_token()}}">
+<div style="margin-bottom:14px"><label for="name">Webhook name</label><input id="name" name="name" maxlength="80" required value="{{webhook.name}}"></div>
+<div style="margin-bottom:14px"><label for="url">Webhook URL</label><input id="url" name="url" type="url" required value="{{webhook.url}}"></div>
+<div style="margin-bottom:16px"><label for="secret">Webhook secret (optional)</label><input id="secret" name="secret" type="password" value="{{webhook.secret or ''}}" autocomplete="new-password"></div>
+<div class="actions"><button type="submit">Save changes</button><a class="btn secondary" href="{{url_for('index')}}">Cancel</a></div>
+</form></div>
+{% endblock %}
