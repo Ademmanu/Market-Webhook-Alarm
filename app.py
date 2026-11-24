@@ -107,30 +107,17 @@ class Delivery(db.Model):
 
 
 with app.app_context():
-    # Explicit, one-time clean install. The marker table is intentionally not
-    # part of SQLAlchemy metadata, so db.drop_all() will not remove it.
-    reset_requested = os.environ.get('RESET_DATABASE_ON_START', '').strip().lower() in ('1', 'true', 'yes')
-    with db.engine.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS _market_monitor_reset_marker "
-            "(id INTEGER PRIMARY KEY, reset_at VARCHAR(40) NOT NULL)"
-        ))
-        already_reset = conn.execute(
-            text("SELECT 1 FROM _market_monitor_reset_marker WHERE id = 1")
-        ).first() is not None
+    # Create missing tables only. No reset or automatic schema migration.
+    db.create_all()
 
-    if reset_requested and not already_reset:
-        log.warning('RESET_DATABASE_ON_START enabled: deleting all Market Webhook Monitor tables and data.')
-        db.drop_all()
-        db.create_all()
-        with db.engine.begin() as conn:
-            conn.execute(
-                text("INSERT INTO _market_monitor_reset_marker (id, reset_at) VALUES (1, :ts)"),
-                {'ts': utcnow().isoformat()}
-            )
-        log.warning('Clean database reset completed. Remove RESET_DATABASE_ON_START from Render now.')
-    else:
-        db.create_all()
+
+def reset_alert_condition_state(alert):
+    if alert.direction in ('xu','xd'):
+        alert.direction='cross'
+    elif alert.direction=='ca_fired':
+        alert.direction='ca'
+    elif alert.direction=='cb_fired':
+        alert.direction='cb'
 
 
 def current_user():
@@ -285,25 +272,30 @@ def index():
 
 def alert_from_form(alert, form):
     symbol=form.get('symbol','').strip().upper()
-    direction=form.get('direction','above')
-    price_field=form.get('price_field','mid')
-    fire_mode=form.get('fire_mode','once')
+    condition=form.get('condition','crossing')
     target=float(form.get('target',''))
     webhook_url=form.get('webhook_url','').strip()
     secret=form.get('webhook_secret','').strip() or None
+    fire_mode=form.get('fire_mode','once')
     cooldown_raw=form.get('cooldown_minutes','').strip()
     cooldown=int(cooldown_raw) if cooldown_raw else None
     expiry=parse_expiry(form.get('expires_at','').strip())
+    interval=form.get('candle_interval','1m')
     if not symbol or len(symbol)>40: raise ValueError('Enter a valid symbol.')
-    if direction not in ('above','below'): raise ValueError('Invalid direction.')
-    if price_field not in ('bid','ask','mid'): raise ValueError('Invalid price field.')
+    if condition not in ('crossing','close_above','close_below'): raise ValueError('Invalid alert condition.')
+    if interval not in ('1m','5m','15m','30m','1h','4h','1d'): raise ValueError('Invalid candle timeframe.')
     if fire_mode not in ('once','repeat'): raise ValueError('Invalid firing mode.')
     if fire_mode=='repeat' and (cooldown is None or cooldown<1 or cooldown>10080):
         raise ValueError('Repeat mode requires a cooldown between 1 and 10080 minutes.')
     ok,msg=valid_webhook_url(webhook_url)
     if not ok: raise ValueError(msg)
     if expiry and expiry <= utcnow(): raise ValueError('Expiry must be a future UTC time.')
-    alert.symbol=symbol; alert.direction=direction; alert.target=target; alert.price_field=price_field
+    # Reuse existing columns to avoid a schema migration: direction stores the
+    # condition; price_field stores candle interval (or mid for tick crossing).
+    alert.symbol=symbol
+    alert.direction={'crossing':'cross','close_above':'ca','close_below':'cb'}[condition]
+    alert.price_field='mid' if condition=='crossing' else interval
+    alert.target=target
     alert.webhook_url=webhook_url; alert.webhook_secret=secret; alert.label=form.get('label','').strip()[:100] or None
     alert.fire_mode=fire_mode; alert.cooldown_minutes=cooldown if fire_mode=='repeat' else None
     alert.expires_at=expiry
@@ -354,6 +346,7 @@ def toggle_alert(alert_id):
     a=Alert.query.filter_by(id=alert_id,user_id=current_user().id).first_or_404()
     a.enabled=not a.enabled
     if a.enabled:
+        reset_alert_condition_state(a)
         a.armed=True; a.last_price=None; a.next_rearm_at=None
     db.session.commit(); return redirect(url_for('index'))
 
@@ -362,7 +355,7 @@ def toggle_alert(alert_id):
 @login_required
 def rearm_alert(alert_id):
     a=Alert.query.filter_by(id=alert_id,user_id=current_user().id).first_or_404()
-    a.enabled=True; a.armed=True; a.last_price=None; a.next_rearm_at=None
+    a.enabled=True; reset_alert_condition_state(a); a.armed=True; a.last_price=None; a.next_rearm_at=None
     db.session.commit(); flash('Alert re-armed. A fresh quote will establish its baseline.', 'success')
     return redirect(url_for('index'))
 
@@ -384,6 +377,7 @@ def bulk_alerts(action):
     for a in alerts:
         a.enabled=(action=='resume')
         if action=='resume':
+            reset_alert_condition_state(a)
             a.armed=True; a.last_price=None; a.next_rearm_at=None
     db.session.commit(); flash('All alerts '+('resumed with fresh price baselines.' if action=='resume' else 'paused.'), 'success')
     return redirect(url_for('index'))
@@ -412,7 +406,7 @@ def delete_webhook(webhook_id):
 def test_alert(alert_id):
     a=Alert.query.filter_by(id=alert_id,user_id=current_user().id).first_or_404()
     payload={'event':'webhook_test','test':True,'alert_id':a.id,'label':a.label,'symbol':a.symbol,
-             'direction':a.direction,'target':a.target,'price_field':a.price_field,
+             'message':f"{a.symbol} test alert at {a.target}",'target':a.target,
              'feed':'market-webhook-monitor','triggered_at':utcnow().isoformat()}
     d=Delivery(user_id=current_user().id,alert_id=a.id,event_type='test',symbol=a.symbol,
                destination=a.webhook_url,payload=json.dumps(payload),status='pending',attempts=0,
@@ -479,10 +473,10 @@ def api_dashboard():
     rows=[]
     for a in alerts:
         tick=prices.get(a.symbol,{})
-        raw=tick.get(a.price_field,tick.get('mid'))
+        raw=tick.get('mid')
         try: price=float(raw) if raw is not None else None
         except (TypeError,ValueError): price=None
-        distance=(((a.target-price) if a.direction=='above' else (price-a.target))/a.target*100 if price is not None and a.target else None)
+        distance=(abs(a.target-price)/abs(a.target)*100 if price is not None and a.target else None)
         rows.append({'id':a.id,'symbol':a.symbol,'price':price,'distance_pct':distance,'stale':tick.get('stale',False),
                      'quote_age':tick.get('quoteAgeSeconds'),'source':tick.get('source'),'market_state':tick.get('marketState')})
     return jsonify({'feed_ok':bool(prices) if symbols else True,'prices':rows,
@@ -508,15 +502,18 @@ def api_status():
                     'pending_deliveries':Delivery.query.filter_by(user_id=u.id,status='pending').count(),'poll_seconds':POLL_SECONDS})
 
 
-def queue_delivery(alert,tick,price):
-    payload={'event':'price_target_hit','alert_id':alert.id,'label':alert.label,'symbol':alert.symbol,
-        'direction':alert.direction,'target':alert.target,'price':price,'price_field':alert.price_field,
-        'bid':tick.get('bid'),'ask':tick.get('ask'),'mid':tick.get('mid'),'feed':'biquote',
-        'source':tick.get('source'),'market_state':tick.get('marketState'),'timestamp':tick.get('timestamp'),
-        'triggered_at':utcnow().isoformat()}
+def queue_delivery(alert,tick,price,closed=False):
+    condition = 'crossed' if alert.direction=='cross' else ('closed above' if alert.direction=='ca' else 'closed below')
+    message=f"{alert.symbol} {condition} {alert.target:.8f}".rstrip('0').rstrip('.')
+    payload={'message':message,'event':'price_target_hit','alert_id':alert.id,'label':alert.label,
+        'symbol':alert.symbol,'condition':condition,'target':alert.target,'price':price,
+        'price_field':'mid','closed_candle':closed,'candle_interval':alert.price_field if closed else None,
+        'timestamp':tick.get('timestamp') or tick.get('openTime'),'feed':'biquote',
+        'source':tick.get('source'),'triggered_at':utcnow().isoformat()}
     d=Delivery(user_id=alert.user_id,alert_id=alert.id,event_type='alert',symbol=alert.symbol,
         destination=alert.webhook_url,payload=json.dumps(payload),status='pending',attempts=0,max_attempts=4,next_attempt_at=utcnow())
     db.session.add(d)
+
 
 
 def get_ticks(symbols):
@@ -543,46 +540,79 @@ def monitor_loop():
         try:
             with app.app_context():
                 now=utcnow()
-                # Expire alerts in UTC.
                 expiring=Alert.query.filter(Alert.enabled.is_(True),Alert.expires_at.isnot(None)).all()
                 for a in expiring:
                     if as_utc(a.expires_at) <= now: a.enabled=False
                 db.session.commit()
                 alerts=Alert.query.filter_by(enabled=True).all()
-                symbols=sorted({a.symbol for a in alerts})
-                if symbols:
-                    ticks=get_ticks(symbols)
-                    tick_map={str(t.get('symbol','')).upper():t for t in ticks if t.get('symbol')}
-                    for a in alerts:
+                tick_symbols=sorted({a.symbol for a in alerts if a.direction in ('cross','xu','xd')})
+                tick_map={}
+                if tick_symbols:
+                    tick_map={str(t.get('symbol','')).upper():t for t in get_ticks(tick_symbols) if t.get('symbol')}
+                candle_cache={}
+                for a in alerts:
+                    if a.direction in ('cross','xu','xd'):
                         tick=tick_map.get(a.symbol)
                         if not tick or tick.get('stale') is True: continue
                         age=tick.get('quoteAgeSeconds')
                         if age is not None and float(age)>QUOTE_MAX_AGE: continue
-                        raw=tick.get(a.price_field,tick.get('mid'))
-                        try: price=float(raw)
+                        try: price=float(tick.get('mid'))
                         except (TypeError,ValueError): continue
                         if a.last_price is None:
-                            a.last_price=price
-                            # Establish baseline only; never fire immediately on create/resume.
-                            db.session.commit(); continue
-                        crossed=(a.last_price < a.target <= price) if a.direction=='above' else (a.last_price > a.target >= price)
-                        reset_side=(price < a.target) if a.direction=='above' else (price > a.target)
-                        if a.armed and crossed:
-                            queue_delivery(a,tick,price)
-                            a.last_fired_at=now; a.armed=False
+                            a.last_price=price; db.session.commit(); continue
+                        crossed=(a.last_price < a.target <= price) or (a.last_price > a.target >= price)
+                        if a.armed and a.direction=='cross' and crossed:
+                            fired_up = price > a.last_price
+                            queue_delivery(a,tick,price,False)
+                            a.last_fired_at=now; a.armed=False; a.direction='xu' if fired_up else 'xd'
                             if a.fire_mode=='once': a.enabled=False
-                            elif a.cooldown_minutes:
-                                a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
-                        elif not a.armed and a.fire_mode=='repeat' and a.enabled and reset_side:
-                            if a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now:
-                                a.armed=True; a.next_rearm_at=None
+                            elif a.cooldown_minutes: a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
+                        elif not a.armed and a.fire_mode=='repeat':
+                            returned = (price <= a.target) if a.direction=='xu' else (price >= a.target)
+                            cooldown_done = a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now
+                            if returned and cooldown_done:
+                                a.armed=True; a.direction='cross'; a.next_rearm_at=None
                         a.last_price=price
+                    else:
+                        interval=a.price_field
+                        key=(a.symbol,interval)
+                        if key not in candle_cache:
+                            try:
+                                resp=requests.get(f'{FEED_BASE}/api/{a.symbol}/ohlc',params={'interval':interval,'limit':5},timeout=12)
+                                resp.raise_for_status(); data=resp.json()
+                                bars=data.get('bars',[]) if isinstance(data,dict) else []
+                                candle_cache[key]=[b for b in bars if not b.get('isOpen')]
+                            except Exception:
+                                log.exception('Candle fetch failed for %s %s',a.symbol,interval); candle_cache[key]=[]
+                        bars=candle_cache[key]
+                        if not bars: continue
+                        # Feed returns newest first. Only completed candles are eligible.
+                        bar=bars[0]
+                        try: close=float(bar['close'])
+                        except (KeyError,TypeError,ValueError): continue
+                        if a.last_price is None:
+                            a.last_price=close; db.session.commit(); continue
+                        base_condition='ca' if a.direction.startswith('ca') else 'cb'
+                        fired_state=a.direction.endswith('_fired')
+                        crossed=(a.last_price <= a.target < close) if base_condition=='ca' else (a.last_price >= a.target > close)
+                        if a.armed and not fired_state and crossed:
+                            queue_delivery(a,bar,close,True)
+                            a.last_fired_at=now; a.armed=False; a.direction=base_condition+'_fired'
+                            if a.fire_mode=='once': a.enabled=False
+                            elif a.cooldown_minutes: a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
+                        elif not a.armed and a.fire_mode=='repeat' and fired_state:
+                            returned=(close <= a.target) if base_condition=='ca' else (close >= a.target)
+                            cooldown_done=a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now
+                            if returned and cooldown_done:
+                                a.armed=True; a.direction=base_condition; a.next_rearm_at=None
+                        a.last_price=close
                     db.session.commit()
                 outage_delay=5
         except Exception:
             log.exception('Price monitor cycle failed')
             time.sleep(outage_delay); outage_delay=min(outage_delay*2,120)
         time.sleep(POLL_SECONDS)
+
 
 
 def delivery_loop():
