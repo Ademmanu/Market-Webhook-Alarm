@@ -13,6 +13,8 @@ services:
         value: 2
       - key: QUOTE_MAX_AGE_SECONDS
         value: 30
+      - key: WEBHOOK_MAX_ATTEMPTS
+        value: 5
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_PASSWORD

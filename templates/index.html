@@ -1,39 +1,67 @@
 {% extends "base.html" %}{% block content %}
-<div class="top"><div><h1>Market Webhook Monitor</h1><div class="muted">Independent quotes · biquote feed · checks every {{poll_seconds}} seconds</div></div><a class="btn secondary" href="/logout">Log out</a></div>
+{% macro act(url, label, cls='secondary', ask='') %}<form class="inline" method="post" action="{{url}}"{% if ask %} onsubmit="return confirm('{{ask}}')"{% endif %}><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="{{cls}} small" type="submit">{{label}}</button></form>{% endmacro %}
+<div class="top"><div><h1>Market Webhook Monitor</h1><div class="muted">Independent quotes · biquote feed · checks every {{poll_seconds}} seconds · all times UTC</div></div><a class="btn secondary" href="/logout">Log out</a></div>
+<div class="chips">
+<span class="chip"><span id="feeddot" class="dot {{feed.status}}"></span><span id="feedtxt">Feed: {{feed.status}}</span></span>
+<span class="chip">{{stats.active}} active</span><span class="chip">{{stats.fired}} fired in total</span>
+<span class="chip" {% if stats.failed %}style="color:#ff9b9b"{% endif %}>{{stats.failed}} failed deliveries (24h)</span></div>
+
 <div class="panel">
 <h2>Create price alert</h2>
-<form method="post" action="/alerts" class="grid">
-<div><label>Market symbol</label><input id="symbol" name="symbol" list="symbols" placeholder="Search or type EURUSD / XAUUSD" required><datalist id="symbols"></datalist></div>
-<div><label>Price field</label><select name="price_field"><option value="mid">Mid (recommended)</option><option value="bid">Bid</option><option value="ask">Ask</option></select></div>
-<div><label>Condition</label><select name="direction"><option value="above">Crosses above</option><option value="below">Crosses below</option></select></div>
-<div><label>Target price</label><input name="target" type="number" step="any" placeholder="e.g. 2350.50" required></div>
-<div class="wide"><label>Your HTTPS webhook URL</label><input name="webhook_url" type="url" placeholder="https://example.com/webhook" required></div>
-<div class="wide"><label>Optional webhook secret (sent as X-Webhook-Secret)</label><input name="webhook_secret" type="password" placeholder="Optional"></div>
-<div class="wide"><button type="submit">Create alert</button></div>
-</form>
-<p class="muted">Alerts trigger on a crossing, not simply because the current price is already beyond the target. After firing, an alert rearms when price returns to the other side.</p>
+{% with form_action='/alerts', submit_label='Create alert', a=none %}{% include "_form.html" %}{% endwith %}
+<p class="muted">Alerts trigger on a crossing, not simply because the current price is already beyond the target. After firing, an alert re-arms when price returns to the other side. Failed deliveries are retried with backoff.</p>
 </div>
-<div class="panel"><h2>Your alerts ({{alerts|length}})</h2>
+
+<div class="panel">
+<div class="head"><h2>Your alerts ({{alerts|length}})</h2>
+<div class="actions">{{ act('/alerts/bulk/pause','Pause all') }}{{ act('/alerts/bulk/resume','Resume all') }}<a class="btn secondary small" href="/export.json">Export</a></div></div>
 {% if alerts %}
-<table><thead><tr><th>Symbol</th><th>Condition</th><th>Target</th><th>Last price</th><th>State</th><th>Actions</th></tr></thead><tbody>
+<table><thead><tr><th>Alert</th><th>Condition</th><th>Live price</th><th>State</th><th>Fired</th><th>Actions</th></tr></thead><tbody>
 {% for a in alerts %}<tr>
-<td data-label="Symbol"><strong>{{a.symbol}}</strong><div class="muted">{{a.price_field|upper}}</div></td>
-<td data-label="Condition">{{"Above" if a.direction=="above" else "Below"}}</td>
-<td data-label="Target">{{"%.8f"|format(a.target)}}</td>
-<td data-label="Last price">{{"%.8f"|format(a.last_price) if a.last_price is not none else "Waiting for quote"}}</td>
-<td data-label="State"><span class="status {{'' if a.enabled else 'off'}}">{{"Armed" if a.enabled and a.armed else ("Triggered" if a.enabled else "Paused")}}</span></td>
+<td data-label="Alert"><strong>{{a.symbol}}</strong>{% if a.label %} · {{a.label}}{% endif %}<div class="muted">{{a.price_field|upper}} · {{a.payload_format or 'json'}}{% if a.repeat_mode=='once' %} · once{% endif %}{% if a.cooldown_seconds %} · {{(a.cooldown_seconds/60)|num}}m cooldown{% endif %}{% if a.expires_at %} · expires {{a.expires_at|dt}}{% endif %}</div></td>
+<td data-label="Condition">{{"Above" if a.direction=="above" else "Below"}} <strong>{{a.target|num}}</strong></td>
+<td data-label="Live price" class="live" data-sym="{{a.symbol}}" data-field="{{a.price_field}}" data-target="{{a.target}}">{{a.last_price|num if a.last_price is not none else "Waiting for quote"}}</td>
+<td data-label="State"><span class="status {{a.state_class}}">{{a.state}}</span></td>
+<td data-label="Fired">{{a.fire_count or 0}}×{% if a.last_fired_at %}<div class="muted">{{a.last_fired_at|dt}}</div>{% endif %}</td>
 <td data-label="Actions"><div class="actions">
-<form class="inline" method="post" action="/alerts/{{a.id}}/toggle"><button class="secondary" type="submit">{{"Pause" if a.enabled else "Enable"}}</button></form>
-<form class="inline" method="post" action="/alerts/{{a.id}}/delete" onsubmit="return confirm('Delete this alert?')"><button class="danger" type="submit">Delete</button></form>
+{{ act('/alerts/%d/toggle'|format(a.id), 'Pause' if a.enabled else 'Enable') }}
+<a class="btn secondary small" href="/alerts/{{a.id}}/edit">Edit</a>
+{{ act('/alerts/%d/test'|format(a.id), 'Test') }}
+{% if a.enabled and not a.armed %}{{ act('/alerts/%d/rearm'|format(a.id), 'Re-arm') }}{% endif %}
+{{ act('/alerts/%d/delete'|format(a.id), 'Delete', 'danger', 'Delete this alert?') }}
 </div></td></tr>{% endfor %}
 </tbody></table>{% else %}<p class="muted">No alerts yet. Create one above.</p>{% endif %}
+<details style="margin-top:14px"><summary>Import alerts (JSON)</summary>
+<form method="post" action="/import" enctype="multipart/form-data" class="actions"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><input type="file" name="file" accept=".json,application/json" required><button class="secondary small" type="submit">Import</button></form></details>
 </div>
+
+<div class="panel"><h2>Recent deliveries</h2>
+{% if deliveries %}<table><thead><tr><th>Time</th><th>Alert</th><th>Type</th><th>Result</th><th>Attempt</th></tr></thead><tbody>
+{% for d in deliveries %}<tr><td data-label="Time">{{d.created_at|dt}}</td><td data-label="Alert">{{d.symbol}} <span class="muted">#{{d.alert_id}}</span></td><td data-label="Type">{{d.kind}}</td>
+<td data-label="Result">{% if d.ok %}<span class="up">✓ HTTP {{d.status_code}}</span>{% else %}<span class="down">✗ {{d.error}}</span>{% endif %}</td><td data-label="Attempt">{{d.attempt}}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="muted">No deliveries yet. Use “Test” on an alert to check your webhook.</p>{% endif %}
+</div>
+
 <div class="muted">Service status: <a href="/health" style="color:#58a6ff">/health</a> · <a href="/api/status" style="color:#58a6ff">/api/status</a> · <a href="/api/symbols" style="color:#58a6ff">symbol catalogue</a></div>
 <script>
-fetch('/api/symbols').then(r=>r.json()).then(data=>{
- const list=document.getElementById('symbols');
- const rows=Array.isArray(data)?data:(data.items||data.symbols||[]);
- rows.forEach(x=>{const o=document.createElement('option');o.value=x.name||x.symbol||'';o.label=(x.description||'')+' · '+(x.type||'');if(o.value)list.appendChild(o)});
-}).catch(()=>{});
+const fmt=n=>Number(n).toFixed(8).replace(/0+$/,'').replace(/\.$/,'');
+async function refresh(){
+ try{
+  const r=await fetch('/api/prices');if(r.status===401){location='/login';return}
+  const d=await r.json();
+  document.querySelectorAll('td.live').forEach(td=>{
+   const t=d.prices[td.dataset.sym];const p=t&&(t[td.dataset.field]??t.mid);
+   if(p==null)return;
+   const tgt=parseFloat(td.dataset.target);let sub='';
+   if(tgt){const pct=(p-tgt)/tgt*100;sub='<div class="muted '+(pct>=0?'up':'down')+'">'+(pct>=0?'+':'')+pct.toFixed(3)+'% vs target'+(t.stale?' · stale':'')+'</div>'}
+   td.innerHTML=fmt(p)+sub;
+  });
+  const f=d.feed,txt={ok:'Feed OK'+(f.latency_ms!=null?' · '+f.latency_ms+' ms':''),idle:'Feed idle (no active alerts)',error:'Feed error',starting:'Feed starting…'};
+  document.getElementById('feedtxt').textContent=txt[f.status]||f.status;
+  document.getElementById('feeddot').className='dot '+f.status;
+  document.getElementById('feedtxt').title=f.error||'';
+ }catch(e){}
+}
+setInterval(refresh,3000);refresh();
 </script>
 {% endblock %}

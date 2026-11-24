@@ -1,0 +1,27 @@
+{# Shared by the dashboard (create) and edit page. Needs: form_action, submit_label, and a (alert or none). #}
+{% set A = a if (a is defined and a) else none %}
+<form method="post" action="{{form_action}}" class="grid">
+<input type="hidden" name="_csrf" value="{{csrf_token()}}">
+<div><label>Market symbol</label><input name="symbol" list="symbols" value="{{A.symbol if A}}" placeholder="Search or type EURUSD / XAUUSD" required><datalist id="symbols"></datalist></div>
+<div><label>Price field</label><select name="price_field">{% for v,t in [('mid','Mid (recommended)'),('bid','Bid'),('ask','Ask')] %}<option value="{{v}}" {{'selected' if A and A.price_field==v}}>{{t}}</option>{% endfor %}</select></div>
+<div><label>Condition</label><select name="direction"><option value="above" {{'selected' if A and A.direction=='above'}}>Crosses above</option><option value="below" {{'selected' if A and A.direction=='below'}}>Crosses below</option></select></div>
+<div><label>Target price</label><input name="target" type="number" step="any" value="{{A.target|num if A}}" placeholder="e.g. 2350.50" required></div>
+<div><label>Label (optional)</label><input name="label" maxlength="80" value="{{A.label or '' if A}}" placeholder="e.g. Gold breakout"></div>
+<div><label>After it fires</label><select name="repeat_mode"><option value="rearm" {{'selected' if A and A.repeat_mode!='once'}}>Re-arm when price returns (repeat)</option><option value="once" {{'selected' if A and A.repeat_mode=='once'}}>Fire once, then pause</option></select></div>
+<div class="wide"><label>Your HTTPS webhook URL</label><input name="webhook_url" type="url" value="{{A.webhook_url if A}}" placeholder="https://example.com/webhook" required></div>
+<details class="wide" {{'open' if A}}><summary>Advanced options</summary><div class="grid">
+<div><label>Send as</label><select name="payload_format">{% for v,t in [('json','Generic JSON (full event)'),('discord','Discord message'),('slack','Slack / Mattermost message'),('telegram','Telegram message')] %}<option value="{{v}}" {{'selected' if A and A.payload_format==v}}>{{t}}</option>{% endfor %}</select></div>
+<div><label>Cooldown before re-arming (minutes)</label><input name="cooldown_minutes" type="number" min="0" step="any" value="{{((A.cooldown_seconds or 0)/60)|num if A else 0}}"></div>
+<div><label>Expires (UTC, optional)</label><input name="expires_at" type="datetime-local" value="{{A.expires_at.strftime('%Y-%m-%dT%H:%M') if A and A.expires_at}}"></div>
+<div><label>Webhook secret {{'(leave blank to keep current)' if A and A.webhook_secret else '(optional)'}}</label><input name="webhook_secret" type="password" autocomplete="new-password" placeholder="Sent as X-Webhook-Secret + HMAC X-Signature-256">{% if A and A.webhook_secret %}<label style="margin-top:6px"><input type="checkbox" name="clear_secret" value="1" style="width:auto"> Remove stored secret</label>{% endif %}</div>
+<div class="wide"><label>Message template for Discord / Slack / Telegram (optional)</label><textarea name="message_template" maxlength="500" placeholder="{symbol} hit {price} (target {target}) {label}">{{A.message_template or '' if A}}</textarea><div class="muted">Placeholders: {symbol} {price} {target} {direction} {bid} {ask} {mid} {label}. Telegram: put chat_id in the URL, e.g. https://api.telegram.org/bot&lt;token&gt;/sendMessage?chat_id=123</div></div>
+</div></details>
+<div class="wide"><button type="submit">{{submit_label}}</button></div>
+</form>
+<script>
+fetch('/api/symbols').then(r=>r.json()).then(data=>{
+ const list=document.getElementById('symbols');
+ const rows=Array.isArray(data)?data:(data.items||data.symbols||[]);
+ rows.forEach(x=>{const o=document.createElement('option');o.value=x.name||x.symbol||'';o.label=(x.description||'')+' · '+(x.type||'');if(o.value)list.appendChild(o)});
+}).catch(()=>{});
+</script>

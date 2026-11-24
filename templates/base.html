@@ -15,6 +15,12 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 8px
 .status{padding:3px 8px;border-radius:20px;background:#263b2b;color:#7ee787;font-size:12px}.off{background:#3b3030;color:#ff9b9b}
 .flash{padding:10px 12px;border-radius:8px;margin:10px 0;background:#263b2b}.flash.error{background:#3b2222}
 .actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.inline{display:inline}.wide{grid-column:1/-1}
+textarea{width:100%;background:#0d1117;color:#e6edf3;border:1px solid #39434e;border-radius:8px;padding:11px;font:inherit;font-size:14px;min-height:72px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}.chip{background:#161b22;border:1px solid #30363d;border-radius:20px;padding:5px 12px;font-size:13px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#8b949e}.dot.ok{background:#3fb950}.dot.error{background:#f85149}
+.status.warn{background:#3b3320;color:#e3b341}.up{color:#3fb950}.down{color:#f85149}
+button.small,.btn.small{padding:6px 10px;font-size:12px}details{margin-top:4px}summary{cursor:pointer;color:#58a6ff;font-size:13px;margin-bottom:10px}
+.head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}.head h2{margin:0}
 @media(max-width:700px){.grid{grid-template-columns:1fr}table,tbody,tr,td{display:block}thead{display:none}tr{border-bottom:1px solid #30363d;padding:8px 0}td{border:0;padding:4px 0}td:before{content:attr(data-label) ": ";color:#9da7b3}}
 </style></head><body><main>
 {% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{category}}">{{message}}</div>{% endfor %}{% endwith %}
