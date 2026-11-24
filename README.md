@@ -1,72 +1,94 @@
 # Market Webhook Monitor v2
 
-A small Flask dashboard that watches symbols from biquote and sends an HTTP POST when a price crosses a target.
+A multi-user Flask dashboard for price-crossing alerts using biquote's public market-data API.
 
-## What's new in v2
-**Alert options**
-- Label, edit-in-place, and a **Test** button that sends a sample webhook
-- **Fire once, then pause** or **repeat** (re-arm when price returns to the other side)
-- **Cooldown** before re-arming, and an optional **expiry** (UTC)
-- Manual **Re-arm**, **Pause all / Resume all**, JSON **Export / Import** (secrets are never exported)
+## v2 features
+- Generated per-user usernames ending in `alarm`; individual password per account.
+- `ADMIN_PASSWORD` is the shared invitation/account-creation password, not a dashboard login password.
+- 24-hour persistent login session, secure HttpOnly/SameSite cookies, proxy-aware HTTPS handling, CSRF protection, and five-failure/five-minute per-account lockout.
+- Auto-upgrade of the original `alert` table. Existing alerts are retained and assigned to the first account that signs up.
+- Optional alert label, edit, test webhook, once/repeat, repeat cooldown, UTC expiry, manual re-arm, pause all/resume all.
+- Per-user saved webhook destinations and per-user delivery history.
+- Durable webhook queue: initial attempt plus three retries, five seconds apart; queued jobs are stored in the database.
+- Dashboard counters and live quotes refreshed every 10 seconds; backend checks quotes every `POLL_SECONDS` (default 2 seconds).
+- Cached symbol catalogue and type/description search picker. The picker uses `/api/symbols?quotedWithinDays=7` and filters by both symbol and description.
+- Correctly parses biquote `/api/latest` response as a symbol-keyed JSON object (for example `{ "EURUSD": { ... } }`).
+- Feed outage backoff, health/database check, and stale-quote filtering.
 
-**Delivery**
-- Send as **generic JSON**, **Discord**, **Slack/Mattermost** or **Telegram** messages, with an optional message template (`{symbol} {price} {target} {direction} {bid} {ask} {mid} {label}`)
-- Failed deliveries are **retried with exponential backoff** (default 5 attempts: 5s, 10s, 20s, 40s). A crossing waiting for delivery is stored in the database, so it survives restarts
-- **Delivery log** on the dashboard (kept 30 days) with status codes and errors
-- Optional secret is sent as `X-Webhook-Secret` **and** as an HMAC signature, `X-Signature-256`
+## Important setup / migration notes
+1. Back up your existing database before deploying this version.
+2. Deploy v2 to the same Render service and use the same `DATABASE_URL` as the current deployment. The app adds columns to the existing `alert` table; it does not drop alerts.
+3. Ensure `ADMIN_PASSWORD` is set. It is the account invitation password. Users create their own personal dashboard passwords.
+4. Set a strong `SECRET_KEY` (at least 32 random characters).
+5. Use persistent PostgreSQL for reliable alerts and webhook retry queue. SQLite on Render's ephemeral filesystem can lose data on restart/redeploy. If your old deployment used SQLite, it will not be durable unless you mount persistent storage or migrate the database.
+6. Keep exactly one Gunicorn worker (`--workers 1`). The price monitor and delivery worker run as in-process background threads; multiple web workers would create duplicate monitors. Render can restart free instances at any time, so delivery continuity is not guaranteed during downtime.
+7. UptimeRobot can ping `https://YOUR-APP.onrender.com/health` every 5 minutes to reduce idle spin-down, but it cannot prevent restarts or guarantee uptime.
 
-**Dashboard**
-- Live prices with distance to target, feed health (OK / idle / error), counts of active/fired/failed
+## Render settings
+Build command:
+```
+pip install -r requirements.txt
+```
+Start command:
+```
+gunicorn app:app --workers 1 --threads 4 --timeout 120
+```
+Environment:
+- `ADMIN_PASSWORD`: strong shared invitation password
+- `SECRET_KEY`: strong random secret
+- `DATABASE_URL`: persistent PostgreSQL connection string
+- `POLL_SECONDS`: optional, default 2
+- `QUOTE_MAX_AGE_SECONDS`: optional, default 30
+- `FEED_BASE`: optional, default `https://biquote.io`
 
-**Security and reliability**
-- CSRF protection, constant-time password check, login lockout (5 failures / 5 min), secure cookies
-- Webhook URLs must be HTTPS and may not point at private/internal addresses; redirects are not followed
-- Secret URL parts (Discord/Telegram tokens) are redacted from error messages and logs
-- Fixed: resuming a long-paused alert could fire instantly from a stale price. It now re-baselines first
-- Feed outages back off automatically; symbol catalogue is cached; database connections are health-checked
-- **Existing v1 databases are upgraded automatically** on startup (new columns are added, no data lost)
+## Account flow
+Open `/signup`, enter the shared `ADMIN_PASSWORD`, and choose a personal password of at least 10 characters. The app generates a username such as `amberfox214alarm`. Save it; it is shown once after signup. Sign in at `/login` using that generated username and your personal password.
 
-The JSON payload keeps every v1 field, plus `label` and `attempt`, so existing receivers keep working.
+The first new account receives any legacy alerts with no owner. Subsequent accounts only see their own alerts, saved webhooks, and delivery logs.
 
-## Environment variables
-| Variable | Default | Purpose |
-|---|---|---|
-| `ADMIN_PASSWORD` | – | Dashboard password (required) |
-| `SECRET_KEY` | – | Strong random value for sessions |
-| `DATABASE_URL` | SQLite | Use external PostgreSQL when deployed |
-| `POLL_SECONDS` | 2 | Feed polling interval (minimum 2) |
-| `QUOTE_MAX_AGE_SECONDS` | 30 | Ignore quotes older than this |
-| `WEBHOOK_MAX_ATTEMPTS` | 5 | Delivery attempts before giving up |
-| `WEBHOOK_RETRY_BASE_SECONDS` | 5 | First retry delay (doubles, max 5 min) |
-| `DELIVERY_LOG_DAYS` | 30 | How long delivery history is kept |
-| `DEV_MODE` | off | Local testing only: allows `http://` and private hosts |
-| `TRUST_PROXY` | 1 | Set 0 if not behind a reverse proxy |
+## Symbol picker
+The instrument picker downloads the recent symbol catalogue from biquote and filters locally by ticker, description, and market type. It deliberately uses `quotedWithinDays=7`, not `liveOnly=true`, so the list does not disappear when markets are closed. A symbol must still have a fresh quote when an alert is monitored.
 
-## Verifying signatures on your receiver
-```python
-import hmac, hashlib
-expected = "sha256=" + hmac.new(SECRET.encode(), request.get_data(), hashlib.sha256).hexdigest()
-ok = hmac.compare_digest(expected, request.headers["X-Signature-256"])
+## Alert semantics
+- **Once:** fires once and disables itself.
+- **Repeat:** requires a cooldown from 1 to 10,080 minutes. After firing, price must return to the non-trigger side and the cooldown must have elapsed before the alert rearms.
+- **No cooldown:** use Once mode; repeat mode is rejected without a cooldown.
+- **Expiry:** `datetime-local` input is interpreted as UTC. Enter the UTC date/time, not your local time.
+- **Resume/re-arm:** clears the previous quote baseline. The first fresh quote is baseline only, preventing immediate false firing from stale prices.
+
+## Webhook delivery
+The webhook must use HTTPS and resolve to a public IP address. This blocks localhost/private-network targets. Each alert's optional secret is sent in `X-Webhook-Secret`.
+
+A price trigger creates a durable delivery row. The worker tries once immediately, then retries up to three additional times at 5-second intervals. HTTP 2xx means sent; other responses are retried. The delivery log shows the latest status, attempts, response code, and error/response text.
+
+Example alert payload:
+```json
+{
+  "event": "price_target_hit",
+  "alert_id": 12,
+  "label": "Gold breakout",
+  "symbol": "XAUUSD",
+  "direction": "above",
+  "target": 4390.5,
+  "price": 4390.62,
+  "price_field": "mid",
+  "bid": 4390.52,
+  "ask": 4390.72,
+  "mid": 4390.62,
+  "feed": "biquote",
+  "source": "MetaTrader 5 (Broker 1)",
+  "market_state": "open",
+  "timestamp": "2026-11-24T09:30:00Z",
+  "triggered_at": "2026-11-24T09:30:01+00:00"
+}
 ```
 
-## Local run
-1. Python 3.11+ and `pip install -r requirements.txt`
-2. Set `ADMIN_PASSWORD` and `SECRET_KEY` (and `DEV_MODE=1` if testing against a local receiver)
-3. `python app.py`, then open `http://127.0.0.1:5000`
-4. Tests: `python -m unittest discover -s tests`
+Test webhook payload uses `event: webhook_test` and `test: true`.
 
-## Render deployment
-1. Push to GitHub, create a Blueprint (or a Web Service) with build `pip install -r requirements.txt` and start `gunicorn app:app --workers 1 --threads 4 --timeout 120`
-2. Set `ADMIN_PASSWORD`, `SECRET_KEY` and an external PostgreSQL `DATABASE_URL`
-3. Deploy, open `/health`, and add it to UptimeRobot (HTTP(s), 5 minutes)
-
-Keep `--workers 1`: the price monitor runs as a background thread inside the web process.
+## Health / status
+- `/health` is public and checks database connectivity. Use it with UptimeRobot.
+- `/api/symbols` is public and returns the cached symbol catalogue.
+- `/api/dashboard` and `/api/status` require login.
 
 ## Limitations
-- Hobby-grade, not an execution or guaranteed-delivery system. Free Render services can restart or sleep.
-- Third-party MT5-derived quotes can differ from your broker. 2-second polling can miss a brief spike between polls.
-- Webhooks are sent one after another; many slow endpoints can delay the next price check.
-- Always use an external database on Render: its filesystem is ephemeral.
-
-## Ideas for next steps
-Percent-move and range alerts, quiet hours, email/Telegram-bot delivery, per-alert history charts, multiple users or API tokens, a streaming feed instead of polling, Prometheus metrics.
+This is a hobby-grade alert system, not an execution engine or guaranteed trading-alert service. The free biquote feed is MT5-derived and can differ from your broker's symbol naming, spread, price, and quote timing. A 2-second REST polling interval can miss a very brief cross between polls. For more precise event capture, upgrade the monitor to the feed's SignalR streaming endpoint and run it on an always-on worker. Render free instances may restart or be unavailable, and UptimeRobot cannot guarantee continuous monitoring. Use persistent PostgreSQL for the queue and alert records.

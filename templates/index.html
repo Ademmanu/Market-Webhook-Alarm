@@ -1,67 +1,39 @@
-{% extends "base.html" %}{% block content %}
-{% macro act(url, label, cls='secondary', ask='') %}<form class="inline" method="post" action="{{url}}"{% if ask %} onsubmit="return confirm('{{ask}}')"{% endif %}><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="{{cls}} small" type="submit">{{label}}</button></form>{% endmacro %}
-<div class="top"><div><h1>Market Webhook Monitor</h1><div class="muted">Independent quotes · biquote feed · checks every {{poll_seconds}} seconds · all times UTC</div></div><a class="btn secondary" href="/logout">Log out</a></div>
-<div class="chips">
-<span class="chip"><span id="feeddot" class="dot {{feed.status}}"></span><span id="feedtxt">Feed: {{feed.status}}</span></span>
-<span class="chip">{{stats.active}} active</span><span class="chip">{{stats.fired}} fired in total</span>
-<span class="chip" {% if stats.failed %}style="color:#ff9b9b"{% endif %}>{{stats.failed}} failed deliveries (24h)</span></div>
-
-<div class="panel">
-<h2>Create price alert</h2>
-{% with form_action='/alerts', submit_label='Create alert', a=none %}{% include "_form.html" %}{% endwith %}
-<p class="muted">Alerts trigger on a crossing, not simply because the current price is already beyond the target. After firing, an alert re-arms when price returns to the other side. Failed deliveries are retried with backoff.</p>
+{% extends 'base.html' %}{% from 'alert_form.html' import alert_fields %}{% block content %}
+<div class="top"><div class="brand"><div class="brandmark">M</div><div><h1>Market Webhook Monitor</h1><div class="muted">Independent market feed · user-isolated alerts · webhook delivery queue</div></div></div><div class="actions"><span class="chip">{{user.username}}</span><form method="post" action="/logout" class="inline"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="ghost">Log out</button></form></div></div>
+<div class="stats">
+<div class="stat"><div class="k">Feed status</div><div class="v" style="font-size:16px"><span id="feedDot" class="dot"></span> <span id="feedStatus">Checking</span></div><div class="muted" id="feedUpdated">Waiting for quote check</div></div>
+<div class="stat"><div class="k">Active alerts</div><div class="v" id="activeCount">{{alerts|selectattr('enabled')|list|length}}</div><div class="muted">Enabled monitors</div></div>
+<div class="stat"><div class="k">Webhooks fired</div><div class="v" id="firedCount">—</div><div class="muted">Successfully delivered</div></div>
+<div class="stat"><div class="k">Failed deliveries</div><div class="v" id="failedCount">—</div><div class="muted">After automatic retries</div></div>
 </div>
-
 <div class="panel">
-<div class="head"><h2>Your alerts ({{alerts|length}})</h2>
-<div class="actions">{{ act('/alerts/bulk/pause','Pause all') }}{{ act('/alerts/bulk/resume','Resume all') }}<a class="btn secondary small" href="/export.json">Export</a></div></div>
-{% if alerts %}
-<table><thead><tr><th>Alert</th><th>Condition</th><th>Live price</th><th>State</th><th>Fired</th><th>Actions</th></tr></thead><tbody>
+<div class="subhead"><div><h2 style="margin:0">Create a price alert</h2><div class="muted">Choose any instrument in the feed catalogue.</div></div><span class="badge good">2s monitor interval</span></div>
+<form method="post" action="/alerts"><input type="hidden" name="_csrf" value="{{csrf_token()}}">{{alert_fields(None,webhooks)}}<div class="actions" style="margin-top:17px"><button>Create alert</button><span class="help">Once alerts pause after one trigger. Repeat alerts require a cooldown and must return across the target before re-arming.</span></div></form>
+</div>
+<div class="panel">
+<div class="subhead"><div><h2 style="margin:0">Your alerts <span class="muted">({{alerts|length}})</span></h2><div class="muted">Live prices refresh every 10 seconds. The monitor checks prices every {{poll_seconds}} seconds.</div></div><div class="actions"><form method="post" action="/alerts/bulk/pause"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="secondary">Pause all</button></form><form method="post" action="/alerts/bulk/resume"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="secondary">Resume all</button></form></div></div>
+{% if alerts %}<div class="tablewrap"><table><thead><tr><th>Alert</th><th>Condition</th><th>Target</th><th>Live price</th><th>Distance</th><th>Status</th><th>Actions</th></tr></thead><tbody>
 {% for a in alerts %}<tr>
-<td data-label="Alert"><strong>{{a.symbol}}</strong>{% if a.label %} · {{a.label}}{% endif %}<div class="muted">{{a.price_field|upper}} · {{a.payload_format or 'json'}}{% if a.repeat_mode=='once' %} · once{% endif %}{% if a.cooldown_seconds %} · {{(a.cooldown_seconds/60)|num}}m cooldown{% endif %}{% if a.expires_at %} · expires {{a.expires_at|dt}}{% endif %}</div></td>
-<td data-label="Condition">{{"Above" if a.direction=="above" else "Below"}} <strong>{{a.target|num}}</strong></td>
-<td data-label="Live price" class="live" data-sym="{{a.symbol}}" data-field="{{a.price_field}}" data-target="{{a.target}}">{{a.last_price|num if a.last_price is not none else "Waiting for quote"}}</td>
-<td data-label="State"><span class="status {{a.state_class}}">{{a.state}}</span></td>
-<td data-label="Fired">{{a.fire_count or 0}}×{% if a.last_fired_at %}<div class="muted">{{a.last_fired_at|dt}}</div>{% endif %}</td>
-<td data-label="Actions"><div class="actions">
-{{ act('/alerts/%d/toggle'|format(a.id), 'Pause' if a.enabled else 'Enable') }}
-<a class="btn secondary small" href="/alerts/{{a.id}}/edit">Edit</a>
-{{ act('/alerts/%d/test'|format(a.id), 'Test') }}
-{% if a.enabled and not a.armed %}{{ act('/alerts/%d/rearm'|format(a.id), 'Re-arm') }}{% endif %}
-{{ act('/alerts/%d/delete'|format(a.id), 'Delete', 'danger', 'Delete this alert?') }}
-</div></td></tr>{% endfor %}
-</tbody></table>{% else %}<p class="muted">No alerts yet. Create one above.</p>{% endif %}
-<details style="margin-top:14px"><summary>Import alerts (JSON)</summary>
-<form method="post" action="/import" enctype="multipart/form-data" class="actions"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><input type="file" name="file" accept=".json,application/json" required><button class="secondary small" type="submit">Import</button></form></details>
+<td><strong>{{a.label or a.symbol}}</strong><div class="muted">{{a.symbol}} · {{a.price_field|upper}}{% if a.fire_mode=='repeat' %} · repeat/{{a.cooldown_minutes}}m{% else %} · once{% endif %}</div>{% if a.expires_at %}<div class="muted">Expires UTC: {{a.expires_at.strftime('%Y-%m-%d %H:%M')}}</div>{% endif %}</td>
+<td>{{'Above' if a.direction=='above' else 'Below'}}</td><td class="price">{{'%.8f'|format(a.target)}}</td>
+<td class="price" id="price-{{a.id}}">—</td><td id="distance-{{a.id}}" class="muted">—</td>
+<td>{% if not a.enabled %}<span class="badge warn">Paused</span>{% elif a.armed %}<span class="badge good">Armed</span>{% else %}<span class="badge warn">Cooling / triggered</span>{% endif %}</td>
+<td><div class="actions"><a class="btn secondary" href="/alerts/{{a.id}}/edit">Edit</a>
+<form method="post" action="/alerts/{{a.id}}/test"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="ghost">Test</button></form>
+{% if a.enabled %}<form method="post" action="/alerts/{{a.id}}/toggle"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="secondary">Pause</button></form>{% else %}<form method="post" action="/alerts/{{a.id}}/toggle"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="secondary">Resume</button></form>{% endif %}
+<form method="post" action="/alerts/{{a.id}}/rearm"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="ghost">Re-arm</button></form>
+<form method="post" action="/alerts/{{a.id}}/delete" onsubmit="return confirm('Delete this alert and its delivery history?')"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="danger">Delete</button></form></div></td>
+</tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No alerts yet. Create your first one above.</div>{% endif %}
 </div>
-
-<div class="panel"><h2>Recent deliveries</h2>
-{% if deliveries %}<table><thead><tr><th>Time</th><th>Alert</th><th>Type</th><th>Result</th><th>Attempt</th></tr></thead><tbody>
-{% for d in deliveries %}<tr><td data-label="Time">{{d.created_at|dt}}</td><td data-label="Alert">{{d.symbol}} <span class="muted">#{{d.alert_id}}</span></td><td data-label="Type">{{d.kind}}</td>
-<td data-label="Result">{% if d.ok %}<span class="up">✓ HTTP {{d.status_code}}</span>{% else %}<span class="down">✗ {{d.error}}</span>{% endif %}</td><td data-label="Attempt">{{d.attempt}}</td></tr>{% endfor %}
-</tbody></table>{% else %}<p class="muted">No deliveries yet. Use “Test” on an alert to check your webhook.</p>{% endif %}
+<div class="panel"><div class="subhead"><div><h2 style="margin:0">Saved webhook destinations</h2><div class="muted">Private to your account. Select one when creating or editing alerts.</div></div></div>
+{% if webhooks %}<div class="tablewrap"><table><thead><tr><th>Name</th><th>Destination</th><th></th></tr></thead><tbody>{% for w in webhooks %}<tr><td>{{w.name}}</td><td style="word-break:break-all">{{w.url}}</td><td><form method="post" action="/webhooks/{{w.id}}/delete"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="danger">Remove</button></form></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">No saved destinations yet. Tick “Save this destination to my account” when creating an alert.</p>{% endif %}
 </div>
-
-<div class="muted">Service status: <a href="/health" style="color:#58a6ff">/health</a> · <a href="/api/status" style="color:#58a6ff">/api/status</a> · <a href="/api/symbols" style="color:#58a6ff">symbol catalogue</a></div>
-<script>
-const fmt=n=>Number(n).toFixed(8).replace(/0+$/,'').replace(/\.$/,'');
-async function refresh(){
- try{
-  const r=await fetch('/api/prices');if(r.status===401){location='/login';return}
-  const d=await r.json();
-  document.querySelectorAll('td.live').forEach(td=>{
-   const t=d.prices[td.dataset.sym];const p=t&&(t[td.dataset.field]??t.mid);
-   if(p==null)return;
-   const tgt=parseFloat(td.dataset.target);let sub='';
-   if(tgt){const pct=(p-tgt)/tgt*100;sub='<div class="muted '+(pct>=0?'up':'down')+'">'+(pct>=0?'+':'')+pct.toFixed(3)+'% vs target'+(t.stale?' · stale':'')+'</div>'}
-   td.innerHTML=fmt(p)+sub;
-  });
-  const f=d.feed,txt={ok:'Feed OK'+(f.latency_ms!=null?' · '+f.latency_ms+' ms':''),idle:'Feed idle (no active alerts)',error:'Feed error',starting:'Feed starting…'};
-  document.getElementById('feedtxt').textContent=txt[f.status]||f.status;
-  document.getElementById('feeddot').className='dot '+f.status;
-  document.getElementById('feedtxt').title=f.error||'';
- }catch(e){}
-}
-setInterval(refresh,3000);refresh();
-</script>
+<div class="panel"><div class="subhead"><div><h2 style="margin:0">Webhook delivery log</h2><div class="muted">Initial attempt plus up to 3 retries, five seconds apart. Pending attempts survive app restarts when using persistent PostgreSQL.</div></div></div>
+{% if deliveries %}<div class="tablewrap"><table><thead><tr><th>Time (UTC)</th><th>Event</th><th>Symbol</th><th>Status</th><th>Attempts</th><th>HTTP</th><th>Details</th></tr></thead><tbody>{% for d in deliveries %}<tr><td>{{d.created_at.strftime('%Y-%m-%d %H:%M:%S')}}</td><td>{{d.event_type}}</td><td>{{d.symbol or '—'}}</td><td>{% if d.status=='sent' %}<span class="badge good">Sent</span>{% elif d.status=='failed' %}<span class="badge bad">Failed</span>{% else %}<span class="badge warn">Pending</span>{% endif %}</td><td>{{d.attempts}} / {{d.max_attempts}}</td><td>{{d.response_code or '—'}}</td><td>{{d.last_error or d.response_text or '—'}}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">No webhook deliveries yet. Use Test on an alert to verify your endpoint.</p>{% endif %}
+</div>
+<div class="help">Feed source: biquote · Quotes are indicative MT5-derived prices and may differ from your broker. This is not an execution or guaranteed alert service. Health endpoint: <a href="/health" style="color:var(--blue)">/health</a></div>
 {% endblock %}
+{% block scripts %}<script>
+async function refreshDashboard(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});const d=await r.json();const dot=document.getElementById('feedDot');document.getElementById('feedStatus').textContent=d.feed_ok?'OK':'Error';dot.classList.toggle('bad',!d.feed_ok);document.getElementById('feedUpdated').textContent=d.feed_error?'Feed request failed':('Updated '+new Date().toLocaleTimeString());document.getElementById('activeCount').textContent=d.active??'—';document.getElementById('firedCount').textContent=d.fired??'—';document.getElementById('failedCount').textContent=d.failed??'—';(d.prices||[]).forEach(p=>{const el=document.getElementById('price-'+p.id);const dist=document.getElementById('distance-'+p.id);if(el)el.textContent=p.price===null?'No quote':Number(p.price).toPrecision(9);if(dist){if(p.distance_pct===null)dist.textContent='—';else dist.textContent=(p.distance_pct>=0?'+':'')+p.distance_pct.toFixed(3)+'% to target';if(p.stale)dist.textContent+=' · stale';}});}catch(e){document.getElementById('feedStatus').textContent='Error';document.getElementById('feedDot').classList.add('bad');}}
+refreshDashboard();setInterval(refreshDashboard,10000);
+</script>{% endblock %}

@@ -1,6 +1,1 @@
-{% extends "base.html" %}{% block content %}
-<div class="top"><h1>Edit alert #{{a.id}} · {{a.symbol}}</h1><a class="btn secondary" href="/">Back</a></div>
-<div class="panel">
-{% with form_action='/alerts/%d/edit'|format(a.id), submit_label='Save changes' %}{% include "_form.html" %}{% endwith %}
-<p class="muted">Changing the symbol, condition, price field or target resets the alert so it starts fresh from the next quote.</p>
-</div>{% endblock %}
+{% extends 'base.html' %}{% from 'alert_form.html' import alert_fields %}{% block content %}<div class="top"><div><h1>Edit alert</h1><div class="muted">Changes reset the quote baseline to prevent stale-price triggers.</div></div><a class="btn secondary" href="/">Back to dashboard</a></div><div class="panel"><form method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}">{{alert_fields(alert,webhooks)}}<div class="actions" style="margin-top:18px"><button>Save changes</button><a class="btn ghost" href="/">Cancel</a></div></form></div>{% endblock %}
