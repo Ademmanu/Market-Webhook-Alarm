@@ -3,10 +3,10 @@
 A multi-user Flask dashboard for price-crossing alerts using biquote's public market-data API.
 
 ## v2 features
-- Generated per-user usernames ending in `alarm`; individual password per account.
+- User-chosen usernames (3–32 characters); individual password per account.
 - `ADMIN_PASSWORD` is the shared invitation/account-creation password, not a dashboard login password.
 - 24-hour persistent login session, secure HttpOnly/SameSite cookies, proxy-aware HTTPS handling, CSRF protection, and five-failure/five-minute per-account lockout.
-- Auto-upgrade of the original `alert` table. Existing alerts are retained and assigned to the first account that signs up.
+- Existing database schema is not automatically migrated or altered at startup. The application creates missing tables only.
 - Optional alert label, edit, test webhook, once/repeat, repeat cooldown, UTC expiry, manual re-arm, pause all/resume all.
 - Per-user saved webhook destinations and per-user delivery history.
 - Durable webhook queue: initial attempt plus three retries, five seconds apart; queued jobs are stored in the database.
@@ -15,9 +15,9 @@ A multi-user Flask dashboard for price-crossing alerts using biquote's public ma
 - Correctly parses biquote `/api/latest` response as a symbol-keyed JSON object (for example `{ "EURUSD": { ... } }`).
 - Feed outage backoff, health/database check, and stale-quote filtering.
 
-## Important setup / migration notes
+## Important setup notes
 1. Back up your existing database before deploying this version.
-2. Deploy v2 to the same Render service and use the same `DATABASE_URL` as the current deployment. The app adds columns to the existing `alert` table; it does not drop alerts.
+2. Deploy to the same Render service and use the same `DATABASE_URL`. This build does not run database migrations or alter existing tables. It assumes the database already has the v2 schema.
 3. Ensure `ADMIN_PASSWORD` is set. It is the account invitation password. Users create their own personal dashboard passwords.
 4. Set a strong `SECRET_KEY` (at least 32 random characters).
 5. Use persistent PostgreSQL for reliable alerts and webhook retry queue. SQLite on Render's ephemeral filesystem can lose data on restart/redeploy. If your old deployment used SQLite, it will not be durable unless you mount persistent storage or migrate the database.
@@ -42,9 +42,9 @@ Environment:
 - `FEED_BASE`: optional, default `https://biquote.io`
 
 ## Account flow
-Open `/signup`, enter the shared `ADMIN_PASSWORD`, and choose a personal password of at least 10 characters. The app generates a username such as `amberfox214alarm`. Save it; it is shown once after signup. Sign in at `/login` using that generated username and your personal password.
+Open `/signup`, enter the shared `ADMIN_PASSWORD`, choose your own username, and create a password of at least 6 characters. Confirm the password. You can show or hide the admin and personal passwords while typing. Sign in at `/login` using your chosen username and password.
 
-The first new account receives any legacy alerts with no owner. Subsequent accounts only see their own alerts, saved webhooks, and delivery logs.
+Accounts only see their own alerts, saved webhooks, and delivery logs. Existing alerts already assigned to an account remain with that account.
 
 ## Symbol picker
 The instrument picker downloads the recent symbol catalogue from biquote and filters locally by ticker, description, and market type. It deliberately uses `quotedWithinDays=7`, not `liveOnly=true`, so the list does not disappear when markets are closed. A symbol must still have a fresh quote when an alert is monitored.

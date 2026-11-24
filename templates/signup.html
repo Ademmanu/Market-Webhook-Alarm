@@ -1,1 +1,44 @@
-{% extends 'base.html' %}{% block content %}<div class="panel loginbox"><div class="brand"><div class="brandmark">M</div><div><h1>Create account</h1><div class="muted">Private alerts and webhook destinations</div></div></div><form method="post" style="margin-top:22px"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><div style="margin-bottom:12px"><label>Account-creation password</label><input type="password" name="invite_password" required autocomplete="off"><div class="help">Use the shared ADMIN_PASSWORD configured by the site owner.</div></div><div style="margin-bottom:16px"><label>Create your personal password (10+ characters)</label><input type="password" name="password" required minlength="10" autocomplete="new-password"></div><button style="width:100%">Create my account</button></form><p class="muted" style="margin-top:16px"><a href="/login" style="color:var(--blue)">Back to sign in</a></p></div>{% endblock %}
+{% extends 'base.html' %}{% block content %}
+<div class="panel loginbox">
+  <div class="brand"><div class="brandmark">M</div><div><h1>Create account</h1><div class="muted">Your own username, alerts and webhook destinations</div></div></div>
+  <form method="post" style="margin-top:22px">
+    <input type="hidden" name="_csrf" value="{{csrf_token()}}">
+    <div style="margin-bottom:13px">
+      <label>Admin password</label>
+      <div class="password-wrap"><input id="adminPassword" type="password" name="invite_password" required autocomplete="off"><button class="password-toggle" type="button" data-toggle="adminPassword" aria-label="Show admin password">Show</button></div>
+      <div class="help">Enter the account-creation password provided by the site owner.</div>
+    </div>
+    <div style="margin-bottom:13px">
+      <label>Choose username</label>
+      <input type="text" name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" placeholder="e.g. hemmy_trades" required autocomplete="username">
+      <div class="help">3–32 characters. Letters, numbers, dots, underscores and hyphens are allowed.</div>
+    </div>
+    <div style="margin-bottom:13px">
+      <label>Create password (at least 6 characters)</label>
+      <div class="password-wrap"><input id="newPassword" type="password" name="password" required minlength="6" autocomplete="new-password"><button class="password-toggle" type="button" data-toggle="newPassword" aria-label="Show password">Show</button></div>
+    </div>
+    <div style="margin-bottom:17px">
+      <label>Confirm password</label>
+      <div class="password-wrap"><input id="confirmPassword" type="password" name="confirm_password" required minlength="6" autocomplete="new-password"><button class="password-toggle" type="button" data-toggle="confirmPassword" aria-label="Show confirm password">Show</button></div>
+    </div>
+    <button style="width:100%" type="submit">Create my account</button>
+  </form>
+  <p class="muted" style="margin-top:16px"><a href="/login" style="color:var(--blue)">Back to sign in</a></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-toggle]').forEach(button=>button.addEventListener('click',()=>{
+  const input=document.getElementById(button.dataset.toggle);
+  const show=input.type==='password'; input.type=show?'text':'password';
+  button.textContent=show?'Hide':'Show';
+  button.setAttribute('aria-label',(show?'Hide':'Show')+' '+(input.name==='invite_password'?'admin password':'password'));
+}));
+const form=document.querySelector('form');
+form.addEventListener('submit',e=>{
+  const p=document.getElementById('newPassword').value;
+  const c=document.getElementById('confirmPassword').value;
+  if(p!==c){e.preventDefault();alert('The passwords do not match.');}
+});
+</script>
+{% endblock %}

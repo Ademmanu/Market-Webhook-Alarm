@@ -106,36 +106,10 @@ class Delivery(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
-def migrate_database():
-    """Add columns to the original Alert table without deleting existing records."""
-    db.create_all()
-    inspector = inspect(db.engine)
-    if 'alert' not in inspector.get_table_names():
-        return
-    existing = {c['name'] for c in inspector.get_columns('alert')}
-    # Nullable user_id keeps legacy records intact until the first user registers.
-    additions = {
-        'user_id': 'INTEGER', 'label': 'VARCHAR(100)', 'fire_mode': "VARCHAR(10) DEFAULT 'once'",
-        'cooldown_minutes': 'INTEGER', 'expires_at': 'TIMESTAMP', 'next_rearm_at': 'TIMESTAMP'
-    }
-    for name, sql_type in additions.items():
-        if name not in existing:
-            try:
-                db.session.execute(text(f'ALTER TABLE alert ADD COLUMN {name} {sql_type}'))
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
-                log.exception('Could not add migration column %s', name)
-    # Normalize old records to safe defaults.
-    try:
-        db.session.execute(text("UPDATE alert SET fire_mode='once' WHERE fire_mode IS NULL OR fire_mode=''") )
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-
-
 with app.app_context():
-    migrate_database()
+    # Create missing tables only. Existing PostgreSQL tables are left untouched;
+    # schema changes must be handled explicitly outside application startup.
+    db.create_all()
 
 
 def current_user():
@@ -169,14 +143,11 @@ def check_csrf():
             abort(400, 'Invalid or missing security token. Refresh the page and try again.')
 
 
-def generate_username():
-    adjectives = ['amber','swift','quiet','bright','silver','rapid','clever','bold','calm','lucky','solar','blue']
-    nouns = ['fox','hawk','tiger','otter','wolf','eagle','panda','lynx','bear','raven','koala','whale']
-    for _ in range(100):
-        name = f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10,999)}alarm"
-        if not User.query.filter_by(username=name).first():
-            return name
-    return 'user' + uuid.uuid4().hex[:10] + 'alarm'
+def valid_username(value):
+    value = (value or '').strip()
+    if not 3 <= len(value) <= 32:
+        return False
+    return all(ch.isalnum() or ch in '._-' for ch in value)
 
 
 def valid_webhook_url(url):
@@ -221,23 +192,33 @@ def signup():
             flash('Account creation is disabled: set ADMIN_PASSWORD in Render environment variables.', 'error')
             return render_template('signup.html')
         if request.form.get('invite_password','') != INVITE_PASSWORD:
-            flash('Invalid account-creation password.', 'error')
+            flash('Incorrect admin password.', 'error')
             return render_template('signup.html')
+        username = request.form.get('username','').strip()
         password = request.form.get('password','')
-        if len(password) < 10:
-            flash('Choose a password with at least 10 characters.', 'error')
+        confirm_password = request.form.get('confirm_password','')
+        if not valid_username(username):
+            flash('Username must be 3–32 characters and use only letters, numbers, dots, underscores or hyphens.', 'error')
             return render_template('signup.html')
-        username = generate_username()
+        if User.query.filter(func.lower(User.username)==username.lower()).first():
+            flash('That username is already taken. Choose another.', 'error')
+            return render_template('signup.html')
+        if len(password) < 6:
+            flash('Your password must contain at least 6 characters.', 'error')
+            return render_template('signup.html')
+        if password != confirm_password:
+            flash('The passwords do not match.', 'error')
+            return render_template('signup.html')
         user = User(username=username, password_hash=generate_password_hash(password))
         db.session.add(user)
         db.session.flush()
-        # Existing alerts from the original single-user version are assigned to first account.
+        # Preserve legacy alerts by assigning unowned alerts to the first account.
         if Alert.query.filter(Alert.user_id.is_(None)).count():
             db.session.query(Alert).filter(Alert.user_id.is_(None)).update({Alert.user_id:user.id})
         db.session.commit()
         session.clear(); session.permanent=True; session['user_id']=user.id; csrf_token()
-        flash('Account created. Save your generated username somewhere safe.', 'success')
-        return render_template('signup_success.html', username=username)
+        flash('Account created successfully.', 'success')
+        return redirect(url_for('index'))
     return render_template('signup.html')
 
 
