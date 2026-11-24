@@ -43,7 +43,31 @@ function applySavedWebhook(){const s=document.getElementById('savedWebhook'),o=s
  const input=document.getElementById('symbolInput'),box=document.getElementById('symbolSuggestions');let symbols=[],ready=false,focused=false;
  function normalise(d){if(Array.isArray(d))return d;if(d&&Array.isArray(d.items))return d.items;if(d&&Array.isArray(d.symbols))return d.symbols;if(d&&Array.isArray(d.data))return d.data;return []}
  fetch('/api/symbols').then(r=>r.json()).then(d=>{symbols=normalise(d).map(x=>({name:String(x.name||x.symbol||''),description:String(x.description||''),type:String(x.type||x.category||'')})).filter(x=>x.name).sort((a,b)=>a.name.localeCompare(b.name));ready=true;if(focused)render()}).catch(()=>{ready=true;if(focused)render()});
- function render(){const q=input.value.trim().toLowerCase();box.innerHTML='';if(!ready){box.textContent='Loading symbols…';box.hidden=false;return}const found=(q?symbols.filter(x=>x.name.toLowerCase().includes(q)||x.description.toLowerCase().includes(q)||x.type.toLowerCase().includes(q)):symbols).slice(0,35);if(!found.length){box.textContent='No catalogue match. You can still enter a symbol manually.';box.hidden=false;return}found.forEach(x=>{const b=document.createElement('button');b.type='button';const strong=document.createElement('strong'),small=document.createElement('small');strong.textContent=x.name;small.textContent=(x.description||'')+(x.type?' · '+x.type:'');b.append(strong,small);b.onclick=()=>{input.value=x.name;box.hidden=true};box.appendChild(b)});box.hidden=false}
+ const FAV_KEY='mwm_favorite_symbols_v1';
+ function getFavorites(){try{return JSON.parse(localStorage.getItem(FAV_KEY)||'[]').map(x=>String(x).toUpperCase())}catch(e){return []}}
+ function saveFavorites(items){try{localStorage.setItem(FAV_KEY,JSON.stringify(items))}catch(e){}}
+ function render(){
+   const q=input.value.trim().toLowerCase(),favorites=getFavorites();box.innerHTML='';
+   if(!ready){box.textContent='Loading symbols…';box.hidden=false;return}
+   const matches=q?symbols.filter(x=>x.name.toLowerCase().includes(q)||x.description.toLowerCase().includes(q)||x.type.toLowerCase().includes(q)):symbols;
+   const favItems=favorites.map(n=>symbols.find(x=>x.name===n)).filter(Boolean).filter(x=>!q||x.name.toLowerCase().includes(q)||x.description.toLowerCase().includes(q)||x.type.toLowerCase().includes(q));
+   const otherItems=matches.filter(x=>!favorites.includes(x.name));
+   const found=[...favItems,...otherItems].slice(0,50);
+   if(!found.length){box.textContent='No catalogue match. You can still enter a symbol manually.';box.hidden=false;return}
+   if(favItems.length){const heading=document.createElement('div');heading.className='suggestion-group-title';heading.textContent='★ Favorites';box.appendChild(heading)}
+   found.forEach((x,index)=>{
+     if(index===favItems.length&&favItems.length){const heading=document.createElement('div');heading.className='suggestion-group-title';heading.textContent='All assets';box.appendChild(heading)}
+     const row=document.createElement('div');row.className='suggestion-row';
+     const choose=document.createElement('button');choose.type='button';choose.className='suggestion-pick';
+     const strong=document.createElement('strong'),small=document.createElement('small');strong.textContent=x.name;small.textContent=(x.description||'')+(x.type?' · '+x.type:'');choose.append(strong,small);
+     choose.onclick=()=>{input.value=x.name;box.hidden=true;input.dispatchEvent(new Event('change',{bubbles:true}))};
+     const favorite=document.createElement('button');favorite.type='button';favorite.className='favorite-toggle';favorite.title=favorites.includes(x.name)?'Remove from favorites':'Add to favorites';favorite.setAttribute('aria-label',favorite.title);favorite.textContent=favorites.includes(x.name)?'★':'☆';
+     if(favorites.includes(x.name))favorite.classList.add('is-favorite');
+     favorite.onclick=(event)=>{event.stopPropagation();const current=getFavorites();const next=current.includes(x.name)?current.filter(n=>n!==x.name):[x.name,...current];saveFavorites(next);render()};
+     row.append(choose,favorite);box.appendChild(row);
+   });
+   box.hidden=false;
+ }
  input.addEventListener('input',render);input.addEventListener('focus',()=>{focused=true;render()});input.addEventListener('blur',()=>setTimeout(()=>focused=false,150));document.addEventListener('click',e=>{if(!box.contains(e.target)&&e.target!==input)box.hidden=true});
 })();
 </script>

@@ -61,3 +61,6 @@ V3 deliberately contains no reset code and no automatic schema migration. It reu
 - Close conditions depend on the provider's completed candle data. If a symbol has no OHLC data for a timeframe, that alert cannot trigger until data is available.
 - Tick polling can miss a very brief crossing between checks.
 - This is an alerting tool, not a trade execution or guaranteed-delivery system.
+
+### Favorite assets
+In the asset search list, tap the star beside an asset to add or remove it from Favorites. Favorites appear above the full asset catalogue when the search field is opened. Favorites are stored locally in that browser/device.

@@ -30,3 +30,8 @@
 ## Webhook wording correction
 - Kept the site condition choices as **Crosses** and **Closes**.
 - Restored webhook message wording to `crossed`, `closed above`, and `closed below`.
+
+## Asset favorites
+- Added a star toggle beside each asset in the symbol search list.
+- Favorited assets are grouped at the top when the symbol search is opened, above the full asset catalogue.
+- Favorites are saved in the browser on the current device.
