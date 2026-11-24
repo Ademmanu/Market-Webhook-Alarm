@@ -4,8 +4,8 @@ A Flask dashboard for independent market quotes and HTTP webhook alerts.
 
 ## V3 features
 - Market symbol search from the biquote catalogue.
-- Alert conditions: `Crossing`, `Closes Above`, `Closes Below`.
-- `Crossing` uses live mid-price ticks.
+- Alert conditions: `Crosses`, `Closes Above`, `Closes Below`.
+- `Crosses` uses live mid-price ticks.
 - Close conditions use completed OHLC candles only (the still-open candle is ignored).
 - Candle intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`.
 - Mid-price is automatic; no bid/ask selector.

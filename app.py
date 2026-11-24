@@ -300,8 +300,20 @@ def alert_from_form(alert, form):
     expiry=parse_expiry(form.get('expires_at','').strip())
     interval=form.get('candle_interval','1m')
     if not symbol or len(symbol)>40: raise ValueError('Enter a valid symbol.')
-    if condition not in ('crossing','close_above','close_below'): raise ValueError('Invalid alert condition.')
+    if condition not in ('crossing','closing'): raise ValueError('Invalid alert condition.')
     if interval not in ('1m','5m','15m','30m','1h','4h','1d'): raise ValueError('Invalid candle timeframe.')
+    if condition == 'closing':
+        quotes=get_ticks([symbol])
+        quote=next((q for q in quotes if str(q.get('symbol','')).upper()==symbol), None)
+        try:
+            current_mid=float(quote.get('mid')) if quote and quote.get('mid') is not None else None
+        except (TypeError,ValueError):
+            current_mid=None
+        if current_mid is None:
+            raise ValueError('Could not get the current mid-price for this symbol. Try again when a quote is available.')
+        if target == current_mid:
+            raise ValueError('Target equals the current price. Change the target slightly above or below the current price.')
+        detected_direction='ca' if target > current_mid else 'cb'
     if fire_mode not in ('once','repeat'): raise ValueError('Invalid firing mode.')
     if fire_mode=='repeat' and (cooldown is None or cooldown<1 or cooldown>10080):
         raise ValueError('Repeat mode requires a cooldown between 1 and 10080 minutes.')
@@ -311,7 +323,7 @@ def alert_from_form(alert, form):
     # Reuse existing columns to avoid a schema migration: direction stores the
     # condition; price_field stores candle interval (or mid for tick crossing).
     alert.symbol=symbol
-    alert.direction={'crossing':'cross','close_above':'ca','close_below':'cb'}[condition]
+    alert.direction='cross' if condition=='crossing' else detected_direction
     alert.price_field='mid' if condition=='crossing' else interval
     alert.target=target
     alert.webhook_url=webhook_url; alert.webhook_secret=secret; alert.label=form.get('label','').strip()[:100] or None
@@ -476,6 +488,22 @@ def api_symbols():
             if _SYMBOL_CACHE['items']:
                 return jsonify(_SYMBOL_CACHE['items'])
         return jsonify({'error':str(exc)}),502
+
+
+@app.get('/api/quote')
+@login_required
+def api_quote():
+    symbol=request.args.get('symbol','').strip().upper()
+    if not symbol or len(symbol)>40:
+        return jsonify({'ok':False,'error':'Enter a valid symbol.'}),400
+    try:
+        quotes=get_ticks([symbol])
+        quote=next((q for q in quotes if str(q.get('symbol','')).upper()==symbol),None)
+        mid=float(quote.get('mid')) if quote and quote.get('mid') is not None else None
+        if mid is None: return jsonify({'ok':False,'error':'No current mid-price available.'}),503
+        return jsonify({'ok':True,'symbol':symbol,'mid':mid})
+    except Exception:
+        return jsonify({'ok':False,'error':'Live quote unavailable.'}),503
 
 
 @app.get('/api/dashboard')

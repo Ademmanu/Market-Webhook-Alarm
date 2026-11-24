@@ -2,9 +2,9 @@
 <div class="grid">
 <div><label>Alert label <span class="muted">(optional)</span></label><input name="label" maxlength="100" placeholder="e.g. Gold breakout" value="{{a.label or '' if a else ''}}"></div>
 <div class="symbolbox"><label>Market symbol</label><input id="symbolInput" name="symbol" autocomplete="off" placeholder="Tap to browse or type gold, EURUSD, BTCUSD..." value="{{a.symbol if a else ''}}" required><div id="symbolSuggestions" class="suggestions" hidden></div><div class="help">Search the available market catalogue.</div></div>
-<div><label>Condition</label><select name="condition" id="conditionSelect"><option value="crossing" {% if not a or a.direction=='cross' %}selected{% endif %}>Crossing</option><option value="close_above" {% if a and a.direction.startswith('ca') %}selected{% endif %}>Closes Above</option><option value="close_below" {% if a and a.direction.startswith('cb') %}selected{% endif %}>Closes Below</option></select></div>
+<div><label>Condition</label><select name="condition" id="conditionSelect"><option value="crossing" {% if not a or a.direction=='cross' %}selected{% endif %}>Crosses</option><option value="closing" {% if a and a.direction!='cross' %}selected{% endif %}>Closes</option></select></div>
 <div id="candleIntervalWrap"><label>Candle timeframe</label><select name="candle_interval" id="candleInterval">{% for tf in ['1m','5m','15m','30m','1h','4h','1d'] %}<option value="{{tf}}" {% if a and a.price_field==tf %}selected{% elif not a and tf=='1m' %}selected{% endif %}>{{tf}}</option>{% endfor %}</select><div class="help">Only completed candles trigger these conditions.</div></div>
-<div><label>Target price</label><input name="target" type="number" step="any" placeholder="e.g. 1.2200" value="{{a.target if a else ''}}" required></div>
+<div><label>Target price</label><input id="targetInput" name="target" type="number" step="any" placeholder="e.g. 1.2200" value="{{a.target if a else ''}}" required><div id="closingPreview" class="help" hidden>Enter a symbol and target price to detect the closing direction.</div></div>
 <div><label>Fire mode</label><select name="fire_mode" id="fireMode"><option value="once" {% if not a or a.fire_mode=='once' %}selected{% endif %}>Fire once — pause after firing</option><option value="repeat" {% if a and a.fire_mode=='repeat' %}selected{% endif %}>Repeat — re-arm after cooldown</option></select></div>
 <div id="cooldownWrap"><label>Cooldown minutes</label><input name="cooldown_minutes" type="number" min="1" max="10080" placeholder="e.g. 15" value="{{a.cooldown_minutes if a and a.cooldown_minutes else ''}}"><div class="help">Repeat mode requires a cooldown. Price must return across the target before re-arming.</div></div>
 <div class="wide"><div class="checkrow"><input type="checkbox" id="expiryEnabled" {% if a and a.expires_at %}checked{% endif %}><label for="expiryEnabled" style="margin:0">Set an expiry time (UTC)</label></div><div id="expiryWrap"><input name="expires_at" type="text" placeholder="YYYY-MM-DDTHH:MMZ" value="{{a.expires_at.strftime('%Y-%m-%dT%H:%MZ') if a and a.expires_at else ''}}"><div class="help">Alert automatically switches off at this UTC time.</div></div></div>
@@ -17,8 +17,29 @@
 function applySavedWebhook(){const s=document.getElementById('savedWebhook'),o=s.options[s.selectedIndex];if(o&&o.dataset.url){document.getElementById('webhookUrl').value=o.dataset.url;document.getElementById('webhookSecret').value=o.dataset.secret||'';}}
 (function(){
  const condition=document.getElementById('conditionSelect'),candle=document.getElementById('candleIntervalWrap'),mode=document.getElementById('fireMode'),cool=document.getElementById('cooldownWrap'),expiry=document.getElementById('expiryEnabled'),expiryWrap=document.getElementById('expiryWrap'),save=document.getElementById('saveWebhook'),nameWrap=document.getElementById('webhookNameWrap');
- function sync(){candle.hidden=condition.value==='crossing';candle.querySelector('select').disabled=condition.value==='crossing';cool.hidden=mode.value!=='repeat';cool.querySelector('input').required=mode.value==='repeat';expiryWrap.hidden=!expiry.checked;expiryWrap.querySelector('input').disabled=!expiry.checked;nameWrap.hidden=!save.checked;nameWrap.querySelector('input').disabled=!save.checked;}
+ function sync(){candle.hidden=condition.value==='crossing';candle.querySelector('select').disabled=condition.value==='crossing';document.getElementById('closingPreview').hidden=condition.value!=='closing';cool.hidden=mode.value!=='repeat';cool.querySelector('input').required=mode.value==='repeat';expiryWrap.hidden=!expiry.checked;expiryWrap.querySelector('input').disabled=!expiry.checked;nameWrap.hidden=!save.checked;nameWrap.querySelector('input').disabled=!save.checked;}
  [condition,mode,expiry,save].forEach(x=>x.addEventListener('change',sync));sync();
+ const symbolField=document.getElementById('symbolInput'),targetField=document.getElementById('targetInput'),preview=document.getElementById('closingPreview');
+ let quoteTimer=null,quoteBusy=false,lastMid=null;
+ async function updateClosingPreview(){
+   if(condition.value!=='closing')return;
+   const symbol=symbolField.value.trim().toUpperCase(),target=Number(targetField.value);
+   if(!symbol||!targetField.value||!Number.isFinite(target)){preview.textContent='Enter a symbol and target price to detect the closing direction.';preview.className='help';return;}
+   if(quoteBusy)return;quoteBusy=true;
+   try{
+     const response=await fetch('/api/quote?symbol='+encodeURIComponent(symbol),{cache:'no-store'});
+     const data=await response.json();
+     if(!response.ok||!data.ok)throw new Error(data.error||'Live quote unavailable.');
+     lastMid=Number(data.mid);
+     if(target===lastMid){preview.textContent='Current price: '+lastMid+' — target is equal to current price. Adjust it above or below.';preview.className='help';}
+     else {const direction=target>lastMid?'Closes Above':'Closes Below';preview.textContent=direction+' · Current mid-price: '+lastMid;preview.className='help';}
+   }catch(e){preview.textContent=e.message+' The app will verify the quote again when you save.';preview.className='help';}
+   finally{quoteBusy=false;}
+ }
+ symbolField.addEventListener('input',updateClosingPreview);targetField.addEventListener('input',updateClosingPreview);
+ condition.addEventListener('change',()=>{if(condition.value==='closing')updateClosingPreview();});
+ setInterval(()=>{if(condition.value==='closing')updateClosingPreview();},10000);
+ if(condition.value==='closing')updateClosingPreview();
  const input=document.getElementById('symbolInput'),box=document.getElementById('symbolSuggestions');let symbols=[],ready=false,focused=false;
  function normalise(d){if(Array.isArray(d))return d;if(d&&Array.isArray(d.items))return d.items;if(d&&Array.isArray(d.symbols))return d.symbols;if(d&&Array.isArray(d.data))return d.data;return []}
  fetch('/api/symbols').then(r=>r.json()).then(d=>{symbols=normalise(d).map(x=>({name:String(x.name||x.symbol||''),description:String(x.description||''),type:String(x.type||x.category||'')})).filter(x=>x.name).sort((a,b)=>a.name.localeCompare(b.name));ready=true;if(focused)render()}).catch(()=>{ready=true;if(focused)render()});
