@@ -9,6 +9,12 @@
 - A warning is logged (at most every 10 minutes per symbol) when no completed candles or no bid price can be read, instead of failing silently.
 - `/health` now includes `monitor_last_cycle` and `monitor_age_seconds`.
 - New module `candles.py` holds the close-alert logic. No database changes.
+- Alert status is now **Armed**, **Ringed** (it has fired) or **Dis-armed** (switched off by you). A once-alert that has fired shows Ringed instead of Paused, and the badge updates live without reloading the page.
+- Replaced Pause/Resume with **Dis-arm**/**Re-arm** (per alert, plus **Dis-arm all** and **Re-arm all**). Dis-arm all dis-arms every alert, so all of them show **Dis-armed** afterwards, including ones that had rung.
+- A repeat alert shows **Ringed - Cooling down** while its cooldown timer is running, then **Ringed - Waiting** while it waits for the price to return across the target and re-arm itself (no Re-arm in its menu then, since it is already waiting to re-arm). Plain **Ringed** is for fire-once alerts that have rung.
+- Saving an edit now always re-arms the alert, even if it was dis-armed or had already rung.
+- "Fire once — pause after firing" is now "Fire once — dis-arm after firing".
+- The dashboard's live bid prices and the closing-direction preview in the alert form now refresh every 5 seconds (was 10). The server-side monitor still polls every `POLL_SECONDS` (default 2).
 
 ## V3
 - Removed all database-reset code and reset environment configuration.

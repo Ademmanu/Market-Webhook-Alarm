@@ -141,6 +141,36 @@ def reset_alert_condition_state(alert):
         alert.direction='cb'
 
 
+def alert_state(alert, now=None):
+    """'armed' (watching), 'cooling' (repeat alert that rang, cooldown still running),
+    'waiting' (repeat alert that rang, cooldown over, waiting for the price to return and re-arm itself),
+    'ringed' (fired and finished) or 'disarmed' (switched off by the user)."""
+    if not alert.armed:
+        if alert.enabled and alert.fire_mode=='repeat':
+            if alert.next_rearm_at and as_utc(alert.next_rearm_at) > (now or utcnow()):
+                return 'cooling'
+            return 'waiting'
+        return 'ringed'
+    return 'armed' if alert.enabled else 'disarmed'
+
+
+app.jinja_env.globals['alert_state'] = alert_state
+
+
+def disarm(alert):
+    """Switch an alert off. Clears any 'ringed' state so it shows as Dis-armed."""
+    alert.enabled=False
+    reset_alert_condition_state(alert)
+    alert.armed=True; alert.next_rearm_at=None
+
+
+def rearm(alert):
+    """Switch an alert on with a fresh price baseline."""
+    alert.enabled=True
+    reset_alert_condition_state(alert)
+    alert.armed=True; alert.last_price=None; alert.next_rearm_at=None
+
+
 def current_user():
     uid = session.get('user_id')
     return db.session.get(User, uid) if uid else None
@@ -378,9 +408,10 @@ def edit_alert(alert_id):
     if request.method=='POST':
         try:
             alert_from_form(alert,request.form)
-            # Editing resets the quote baseline; do not fire on a stale previous quote.
-            alert.last_price=None; alert.armed=True; alert.next_rearm_at=None
-            db.session.commit(); flash('Alert updated. It will establish a fresh price baseline.', 'success')
+            # Editing always re-arms the alert (even if it was dis-armed or had rung) and resets
+            # the quote baseline so it cannot fire on a stale previous quote.
+            alert.enabled=True; alert.armed=True; alert.last_price=None; alert.next_rearm_at=None
+            db.session.commit(); flash('Alert updated and re-armed. It will establish a fresh price baseline.', 'success')
             return redirect(url_for('index'))
         except Exception as exc:
             db.session.rollback(); flash(f'Could not update alert: {exc}', 'error')
@@ -388,22 +419,20 @@ def edit_alert(alert_id):
     return render_template('edit.html',alert=alert,webhooks=webhooks)
 
 
-@app.post('/alerts/<int:alert_id>/toggle')
+@app.post('/alerts/<int:alert_id>/disarm')
 @login_required
-def toggle_alert(alert_id):
+def disarm_alert(alert_id):
     a=Alert.query.filter_by(id=alert_id,user_id=current_user().id).first_or_404()
-    a.enabled=not a.enabled
-    if a.enabled:
-        reset_alert_condition_state(a)
-        a.armed=True; a.last_price=None; a.next_rearm_at=None
-    db.session.commit(); return redirect(url_for('index'))
+    disarm(a)
+    db.session.commit(); flash('Alert dis-armed.', 'success')
+    return redirect(url_for('index'))
 
 
 @app.post('/alerts/<int:alert_id>/rearm')
 @login_required
 def rearm_alert(alert_id):
     a=Alert.query.filter_by(id=alert_id,user_id=current_user().id).first_or_404()
-    a.enabled=True; reset_alert_condition_state(a); a.armed=True; a.last_price=None; a.next_rearm_at=None
+    rearm(a)
     db.session.commit(); flash('Alert re-armed. A fresh quote will establish its baseline.', 'success')
     return redirect(url_for('index'))
 
@@ -420,14 +449,14 @@ def delete_alert(alert_id):
 @app.post('/alerts/bulk/<action>')
 @login_required
 def bulk_alerts(action):
-    if action not in ('pause','resume'): abort(404)
+    if action not in ('disarm','rearm'): abort(404)
     alerts=Alert.query.filter_by(user_id=current_user().id).all()
     for a in alerts:
-        a.enabled=(action=='resume')
-        if action=='resume':
-            reset_alert_condition_state(a)
-            a.armed=True; a.last_price=None; a.next_rearm_at=None
-    db.session.commit(); flash('All alerts '+('resumed with fresh price baselines.' if action=='resume' else 'paused.'), 'success')
+        if action=='rearm':
+            rearm(a)
+        else:
+            disarm(a)
+    db.session.commit(); flash('All alerts '+('re-armed with fresh price baselines.' if action=='rearm' else 'dis-armed.'), 'success')
     return redirect(url_for('index'))
 
 
@@ -558,7 +587,7 @@ def api_dashboard():
         tick=prices.get(a.symbol,{})
         price=tick_bid(tick)
         distance=(abs(a.target-price)/abs(a.target)*100 if price is not None and a.target else None)
-        rows.append({'id':a.id,'symbol':a.symbol,'price':price,'distance_pct':distance,'stale':tick.get('stale',False),
+        rows.append({'id':a.id,'symbol':a.symbol,'state':alert_state(a),'enabled':a.enabled,'price':price,'distance_pct':distance,'stale':tick.get('stale',False),
                      'quote_age':tick.get('quoteAgeSeconds'),'source':tick.get('source'),'market_state':tick.get('marketState')})
     return jsonify({'feed_ok':bool(prices) if symbols else True,'prices':rows,
         'active':sum(1 for a in alerts if a.enabled),
