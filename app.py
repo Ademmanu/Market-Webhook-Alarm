@@ -10,6 +10,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from sqlalchemy import inspect, text, func
 
+from candles import completed_bars, process_candle_alert
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('market-monitor')
 
@@ -36,6 +38,25 @@ _SYMBOL_CACHE = {'expires': 0, 'items': []}
 _SYMBOL_CACHE_LOCK = threading.Lock()
 MAX_LOGIN_ATTEMPTS = 5
 LOCK_MINUTES = 5
+_LAST_BAR = {}          # alert id -> time of the last candle judged (in memory only)
+_WARNED = {}            # throttle key -> last time a warning was logged
+_MONITOR_STATE = {'last_cycle': None}
+
+
+def warn_throttled(key, message, *args, every=600):
+    now = time.time()
+    if now - _WARNED.get(key, 0) >= every:
+        _WARNED[key] = now
+        log.warning(message, *args)
+
+
+def tick_bid(tick):
+    """Bid price of a feed tick as a float, or None if missing/invalid."""
+    try:
+        value = tick.get('bid') if tick else None
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def utcnow():
@@ -64,7 +85,7 @@ class Alert(db.Model):
     symbol = db.Column(db.String(40), nullable=False, index=True)
     direction = db.Column(db.String(10), nullable=False)
     target = db.Column(db.Float, nullable=False)
-    price_field = db.Column(db.String(10), nullable=False, default='mid')
+    price_field = db.Column(db.String(10), nullable=False, default='bid')
     webhook_url = db.Column(db.Text, nullable=False)
     webhook_secret = db.Column(db.Text, nullable=True)
     enabled = db.Column(db.Boolean, nullable=False, default=True)
@@ -305,15 +326,12 @@ def alert_from_form(alert, form):
     if condition == 'closing':
         quotes=get_ticks([symbol])
         quote=next((q for q in quotes if str(q.get('symbol','')).upper()==symbol), None)
-        try:
-            current_mid=float(quote.get('mid')) if quote and quote.get('mid') is not None else None
-        except (TypeError,ValueError):
-            current_mid=None
-        if current_mid is None:
-            raise ValueError('Could not get the current mid-price for this symbol. Try again when a quote is available.')
-        if target == current_mid:
+        current_bid=tick_bid(quote)
+        if current_bid is None:
+            raise ValueError('Could not get the current bid price for this symbol. Try again when a quote is available.')
+        if target == current_bid:
             raise ValueError('Target equals the current price. Change the target slightly above or below the current price.')
-        detected_direction='ca' if target > current_mid else 'cb'
+        detected_direction='ca' if target > current_bid else 'cb'
     if fire_mode not in ('once','repeat'): raise ValueError('Invalid firing mode.')
     if fire_mode=='repeat' and (cooldown is None or cooldown<1 or cooldown>10080):
         raise ValueError('Repeat mode requires a cooldown between 1 and 10080 minutes.')
@@ -321,10 +339,10 @@ def alert_from_form(alert, form):
     if not ok: raise ValueError(msg)
     if expiry and expiry <= utcnow(): raise ValueError('Expiry must be a future UTC time.')
     # Reuse existing columns to avoid a schema migration: direction stores the
-    # condition; price_field stores candle interval (or mid for tick crossing).
+    # condition; price_field stores candle interval (or bid for tick crossing).
     alert.symbol=symbol
     alert.direction='cross' if condition=='crossing' else detected_direction
-    alert.price_field='mid' if condition=='crossing' else interval
+    alert.price_field='bid' if condition=='crossing' else interval
     alert.target=target
     alert.webhook_url=webhook_url; alert.webhook_secret=secret; alert.label=form.get('label','').strip()[:100] or None
     alert.fire_mode=fire_mode; alert.cooldown_minutes=cooldown if fire_mode=='repeat' else None
@@ -499,9 +517,9 @@ def api_quote():
     try:
         quotes=get_ticks([symbol])
         quote=next((q for q in quotes if str(q.get('symbol','')).upper()==symbol),None)
-        mid=float(quote.get('mid')) if quote and quote.get('mid') is not None else None
-        if mid is None: return jsonify({'ok':False,'error':'No current mid-price available.'}),503
-        return jsonify({'ok':True,'symbol':symbol,'mid':mid})
+        bid=tick_bid(quote)
+        if bid is None: return jsonify({'ok':False,'error':'No current bid price available.'}),503
+        return jsonify({'ok':True,'symbol':symbol,'bid':bid})
     except Exception:
         return jsonify({'ok':False,'error':'Live quote unavailable.'}),503
 
@@ -538,9 +556,7 @@ def api_dashboard():
     rows=[]
     for a in alerts:
         tick=prices.get(a.symbol,{})
-        raw=tick.get('mid')
-        try: price=float(raw) if raw is not None else None
-        except (TypeError,ValueError): price=None
+        price=tick_bid(tick)
         distance=(abs(a.target-price)/abs(a.target)*100 if price is not None and a.target else None)
         rows.append({'id':a.id,'symbol':a.symbol,'price':price,'distance_pct':distance,'stale':tick.get('stale',False),
                      'quote_age':tick.get('quoteAgeSeconds'),'source':tick.get('source'),'market_state':tick.get('marketState')})
@@ -556,7 +572,10 @@ def api_dashboard():
 def health():
     try: db.session.execute(text('SELECT 1'))
     except Exception as exc: return jsonify({'ok':False,'database_error':str(exc)}),503
-    return jsonify({'ok':True,'service':'market-webhook-monitor','utc':utcnow().isoformat(),'poll_seconds':POLL_SECONDS}),200
+    last=_MONITOR_STATE.get('last_cycle')
+    return jsonify({'ok':True,'service':'market-webhook-monitor','utc':utcnow().isoformat(),'poll_seconds':POLL_SECONDS,
+                    'monitor_last_cycle':last.isoformat() if last else None,
+                    'monitor_age_seconds':round((utcnow()-last).total_seconds(),1) if last else None}),200
 
 
 @app.get('/api/status')
@@ -572,7 +591,7 @@ def queue_delivery(alert,tick,price,closed=False):
     message=f"{alert.symbol} {condition} {alert.target:.8f}".rstrip('0').rstrip('.')
     payload={'message':message,'event':'price_target_hit','alert_id':alert.id,'label':alert.label,
         'symbol':alert.symbol,'condition':condition,'target':alert.target,'price':price,
-        'price_field':'mid','closed_candle':closed,'candle_interval':alert.price_field if closed else None,
+        'price_field':'bid','closed_candle':closed,'candle_interval':alert.price_field if closed else None,
         'timestamp':tick.get('timestamp') or tick.get('openTime'),'feed':'biquote',
         'source':tick.get('source'),'triggered_at':utcnow().isoformat()}
     d=Delivery(user_id=alert.user_id,alert_id=alert.id,event_type='alert',symbol=alert.symbol,
@@ -598,6 +617,17 @@ def get_ticks(symbols):
     return []
 
 
+def fetch_completed_bars(symbol, interval):
+    """Completed candles for a symbol/timeframe, oldest -> newest ([] on any failure)."""
+    try:
+        resp=requests.get(f'{FEED_BASE}/api/{symbol}/ohlc',params={'interval':interval,'limit':5},timeout=12)
+        resp.raise_for_status()
+        return completed_bars(resp.json())
+    except Exception:
+        log.exception('Candle fetch failed for %s %s',symbol,interval)
+        return []
+
+
 def monitor_loop():
     outage_delay=5
     log.info('Monitor started: poll=%ss feed=%s',POLL_SECONDS,FEED_BASE)
@@ -611,68 +641,61 @@ def monitor_loop():
                 db.session.commit()
                 alerts=Alert.query.filter_by(enabled=True).all()
                 tick_symbols=sorted({a.symbol for a in alerts if a.direction in ('cross','xu','xd')})
-                tick_map={}
+                tick_map={}; tick_failed=False
                 if tick_symbols:
-                    tick_map={str(t.get('symbol','')).upper():t for t in get_ticks(tick_symbols) if t.get('symbol')}
+                    # A failed tick request must not stop the candle-close alerts below.
+                    try:
+                        tick_map={str(t.get('symbol','')).upper():t for t in get_ticks(tick_symbols) if t.get('symbol')}
+                    except Exception:
+                        tick_failed=True; log.exception('Tick fetch failed')
                 candle_cache={}
                 for a in alerts:
-                    if a.direction in ('cross','xu','xd'):
-                        tick=tick_map.get(a.symbol)
-                        if not tick or tick.get('stale') is True: continue
-                        age=tick.get('quoteAgeSeconds')
-                        if age is not None and float(age)>QUOTE_MAX_AGE: continue
-                        try: price=float(tick.get('mid'))
-                        except (TypeError,ValueError): continue
-                        if a.last_price is None:
-                            a.last_price=price; db.session.commit(); continue
-                        crossed=(a.last_price < a.target <= price) or (a.last_price > a.target >= price)
-                        if a.armed and a.direction=='cross' and crossed:
-                            fired_up = price > a.last_price
-                            queue_delivery(a,tick,price,False)
-                            a.last_fired_at=now; a.armed=False; a.direction='xu' if fired_up else 'xd'
-                            if a.fire_mode=='once': a.enabled=False
-                            elif a.cooldown_minutes: a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
-                        elif not a.armed and a.fire_mode=='repeat':
-                            returned = (price <= a.target) if a.direction=='xu' else (price >= a.target)
-                            cooldown_done = a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now
-                            if returned and cooldown_done:
-                                a.armed=True; a.direction='cross'; a.next_rearm_at=None
-                        a.last_price=price
-                    else:
-                        interval=a.price_field
-                        key=(a.symbol,interval)
-                        if key not in candle_cache:
-                            try:
-                                resp=requests.get(f'{FEED_BASE}/api/{a.symbol}/ohlc',params={'interval':interval,'limit':5},timeout=12)
-                                resp.raise_for_status(); data=resp.json()
-                                bars=data.get('bars',[]) if isinstance(data,dict) else []
-                                candle_cache[key]=[b for b in bars if not b.get('isOpen')]
-                            except Exception:
-                                log.exception('Candle fetch failed for %s %s',a.symbol,interval); candle_cache[key]=[]
-                        bars=candle_cache[key]
-                        if not bars: continue
-                        # Feed returns newest first. Only completed candles are eligible.
-                        bar=bars[0]
-                        try: close=float(bar['close'])
-                        except (KeyError,TypeError,ValueError): continue
-                        if a.last_price is None:
-                            a.last_price=close; db.session.commit(); continue
-                        base_condition='ca' if a.direction.startswith('ca') else 'cb'
-                        fired_state=a.direction.endswith('_fired')
-                        crossed=(a.last_price <= a.target < close) if base_condition=='ca' else (a.last_price >= a.target > close)
-                        if a.armed and not fired_state and crossed:
-                            queue_delivery(a,bar,close,True)
-                            a.last_fired_at=now; a.armed=False; a.direction=base_condition+'_fired'
-                            if a.fire_mode=='once': a.enabled=False
-                            elif a.cooldown_minutes: a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
-                        elif not a.armed and a.fire_mode=='repeat' and fired_state:
-                            returned=(close <= a.target) if base_condition=='ca' else (close >= a.target)
-                            cooldown_done=a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now
-                            if returned and cooldown_done:
-                                a.armed=True; a.direction=base_condition; a.next_rearm_at=None
-                        a.last_price=close
-                    db.session.commit()
-                outage_delay=5
+                    # One bad alert must not stop the others from being checked.
+                    try:
+                        if a.direction in ('cross','xu','xd'):
+                            tick=tick_map.get(a.symbol)
+                            if not tick or tick.get('stale') is True: continue
+                            age=tick.get('quoteAgeSeconds')
+                            if age is not None and float(age)>QUOTE_MAX_AGE: continue
+                            price=tick_bid(tick)
+                            if price is None:
+                                warn_throttled(('nobid',a.symbol),'No bid price in feed tick for %s',a.symbol)
+                                continue
+                            if a.last_price is None:
+                                a.last_price=price; db.session.commit(); continue
+                            crossed=(a.last_price < a.target <= price) or (a.last_price > a.target >= price)
+                            if a.armed and a.direction=='cross' and crossed:
+                                fired_up = price > a.last_price
+                                queue_delivery(a,tick,price,False)
+                                a.last_fired_at=now; a.armed=False; a.direction='xu' if fired_up else 'xd'
+                                if a.fire_mode=='once': a.enabled=False
+                                elif a.cooldown_minutes: a.next_rearm_at=now+timedelta(minutes=a.cooldown_minutes)
+                            elif not a.armed and a.fire_mode=='repeat':
+                                returned = (price <= a.target) if a.direction=='xu' else (price >= a.target)
+                                cooldown_done = a.next_rearm_at is None or as_utc(a.next_rearm_at)<=now
+                                if returned and cooldown_done:
+                                    a.armed=True; a.direction='cross'; a.next_rearm_at=None
+                            a.last_price=price
+                        else:
+                            interval=a.price_field
+                            key=(a.symbol,interval)
+                            if key not in candle_cache:
+                                candle_cache[key]=fetch_completed_bars(a.symbol,interval)
+                            bars=candle_cache[key]
+                            if not bars:
+                                warn_throttled(('nobars',key),'No completed candles for %s %s - close alert cannot be checked',a.symbol,interval)
+                                continue
+                            process_candle_alert(a,bars,now,_LAST_BAR,
+                                lambda bar,close,a=a: queue_delivery(a,bar,close,True))
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        log.exception('Alert check failed (alert id %s)',getattr(a,'id','?'))
+                _MONITOR_STATE['last_cycle']=utcnow()
+                if tick_failed:
+                    time.sleep(outage_delay); outage_delay=min(outage_delay*2,120)
+                else:
+                    outage_delay=5
         except Exception:
             log.exception('Price monitor cycle failed')
             time.sleep(outage_delay); outage_delay=min(outage_delay*2,120)

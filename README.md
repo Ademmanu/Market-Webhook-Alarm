@@ -5,10 +5,10 @@ A Flask dashboard for independent market quotes and HTTP webhook alerts.
 ## V3 features
 - Market symbol search from the biquote catalogue.
 - Alert conditions: `Crosses`, `Closes Above`, `Closes Below`.
-- `Crosses` uses live mid-price ticks.
-- Close conditions use completed OHLC candles only (the still-open candle is ignored).
+- `Crosses` uses live **bid** price ticks.
+- Close conditions use completed OHLC candles only (the still-open candle is ignored). A close alert fires when a completed candle closes above/below the target; the candle already complete when the alert was created is only a baseline.
 - Candle intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`.
-- Mid-price is automatic; no bid/ask selector.
+- Bid price is automatic; no bid/ask/mid selector.
 - Optional label, edit, test webhook, once/repeat, cooldown and UTC expiry.
 - Per-user saved webhook destinations.
 - Three-dot alert action menus and background action toast notifications.
@@ -27,7 +27,7 @@ Alert deliveries include a plain `message` field, for example:
   "condition": "crossed",
   "target": 1.22,
   "price": 1.2201,
-  "price_field": "mid",
+  "price_field": "bid",
   "closed_candle": false,
   "candle_interval": null,
   "feed": "biquote",
@@ -52,6 +52,8 @@ gunicorn app:app --workers 1 --threads 4 --timeout 120
 ```
 
 Use one Gunicorn worker because the price monitor and delivery worker run as in-process background threads. UptimeRobot can ping `/health`, but it cannot guarantee a free Render instance never restarts.
+
+The monitor runs on the server, so alerts work with the site closed in your browser, as long as the Render instance is awake. A free instance sleeps after a period with no incoming requests, so keep an UptimeRobot (or similar) monitor pinging `/health` every 5 minutes. `/health` also reports `monitor_age_seconds`, the time since the price monitor last completed a cycle; it should stay close to `poll_seconds`.
 
 ## Database compatibility
 V3 deliberately contains no reset code and no automatic schema migration. It reuses the existing V2 columns for condition state and candle interval, so it does not require new database columns. Deploy against the existing V2 PostgreSQL database; do not enable any database-reset environment variable.

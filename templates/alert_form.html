@@ -20,7 +20,7 @@ function applySavedWebhook(){const s=document.getElementById('savedWebhook'),o=s
  function sync(){candle.hidden=condition.value==='crossing';candle.querySelector('select').disabled=condition.value==='crossing';document.getElementById('closingPreview').hidden=condition.value!=='closing';cool.hidden=mode.value!=='repeat';cool.querySelector('input').required=mode.value==='repeat';expiryWrap.hidden=!expiry.checked;expiryWrap.querySelector('input').disabled=!expiry.checked;nameWrap.hidden=!save.checked;nameWrap.querySelector('input').disabled=!save.checked;}
  [condition,mode,expiry,save].forEach(x=>x.addEventListener('change',sync));sync();
  const symbolField=document.getElementById('symbolInput'),targetField=document.getElementById('targetInput'),preview=document.getElementById('closingPreview');
- let quoteTimer=null,quoteBusy=false,lastMid=null;
+ let quoteTimer=null,quoteBusy=false,lastBid=null;
  async function updateClosingPreview(){
    if(condition.value!=='closing')return;
    const symbol=symbolField.value.trim().toUpperCase(),target=Number(targetField.value);
@@ -30,9 +30,9 @@ function applySavedWebhook(){const s=document.getElementById('savedWebhook'),o=s
      const response=await fetch('/api/quote?symbol='+encodeURIComponent(symbol),{cache:'no-store'});
      const data=await response.json();
      if(!response.ok||!data.ok)throw new Error(data.error||'Live quote unavailable.');
-     lastMid=Number(data.mid);
-     if(target===lastMid){preview.textContent='Current price: '+lastMid+' — target is equal to current price. Adjust it above or below.';preview.className='help';}
-     else {const direction=target>lastMid?'Closes Above':'Closes Below';preview.textContent=direction+' · Current mid-price: '+lastMid;preview.className='help';}
+     lastBid=Number(data.bid);
+     if(target===lastBid){preview.textContent='Current bid price: '+lastBid+' — target is equal to current price. Adjust it above or below.';preview.className='help';}
+     else {const direction=target>lastBid?'Closes Above':'Closes Below';preview.textContent=direction+' · Current bid price: '+lastBid;preview.className='help';}
    }catch(e){preview.textContent=e.message+' The app will verify the quote again when you save.';preview.className='help';}
    finally{quoteBusy=false;}
  }

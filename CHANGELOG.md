@@ -1,5 +1,15 @@
 # Changelog
 
+## Bid price + close-alert reliability update
+- All live prices now use the **bid** automatically instead of mid: Crosses ticks, the closing-direction preview/detection, the dashboard's Live bid column, `/api/quote`, and the webhook payload (`price_field` is now `bid`).
+- Close alerts (Closes Above / Closes Below) now fire when a completed candle closes beyond the target. Previously the candle before it also had to be on the other side of the target, so a close could be missed when the last completed candle was already beyond the target.
+- Every newly completed candle is now judged in order, so a close that happened between two checks (for example while the instance was waking up) is no longer skipped.
+- The candle feed parser accepts a bare list or a `bars`/`candles`/`items`/`data` wrapper, and orders candles by their timestamps instead of assuming newest-first.
+- A failed live-tick request no longer blocks close alerts, and one failing alert no longer stops the others in the same cycle.
+- A warning is logged (at most every 10 minutes per symbol) when no completed candles or no bid price can be read, instead of failing silently.
+- `/health` now includes `monitor_last_cycle` and `monitor_age_seconds`.
+- New module `candles.py` holds the close-alert logic. No database changes.
+
 ## V3
 - Removed all database-reset code and reset environment configuration.
 - Added Crossing, Closes Above and Closes Below conditions.
